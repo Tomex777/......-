@@ -44,7 +44,7 @@ for(const sessionId of runtime.sessions){
 }
 
 const server=createCortexServer({config,registry,roleManager,sessions,pairing,inbox,access,events});
-server.listen(runtime.port,()=>logger.info({port:runtime.port},'Night Core listening'));
+server.listen(runtime.port,runtime.host,()=>logger.info({host:runtime.host,port:runtime.port},'Night Core listening'));
 let shuttingDown=false;
 const shutdown=async signal=>{if(shuttingDown)return;shuttingDown=true;logger.info({signal},'Night shutting down');registry.stopWatching();server.close();await sessions.closeAll();inbox.close();setTimeout(()=>process.exit(1),5000).unref();process.exit(0);};
 process.on('SIGINT',()=>shutdown('SIGINT'));process.on('SIGTERM',()=>shutdown('SIGTERM'));
