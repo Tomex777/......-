@@ -1,0 +1,1 @@
+export default {name:'disallow',aliases:[],ownerOnly:true,requiresAllowedChat:false,requiresAI:false,feature:'access',async execute({message,access,reply}){access.disallow(message.chatJid);await reply('Night is now disabled in this chat.');return{chatJid:message.chatJid,allowed:false};}};
