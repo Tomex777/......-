@@ -1,0 +1,124 @@
+name: Real WebTorrent test - Pterodactyl 1GB 3GB
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/ptero-real-torrent.yml'
+
+jobs:
+  real-torrent:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Create 3 GiB Pterodactyl-style writable storage
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ROOT="$RUNNER_TEMP/ptero-real"
+          mkdir -p "$ROOT"
+          fallocate -l 3G "$ROOT/disk.img"
+          mkfs.ext4 -q "$ROOT/disk.img"
+          sudo mkdir -p /mnt/ptero-real
+          sudo mount -o loop "$ROOT/disk.img" /mnt/ptero-real
+          sudo chown -R 1000:1000 /mnt/ptero-real
+          mkdir -p /mnt/ptero-real/app /mnt/ptero-real/downloads
+          sudo chown -R 1000:1000 /mnt/ptero-real
+          df -h /mnt/ptero-real
+
+      - name: Install worker dependencies under the same limits
+        shell: bash
+        run: |
+          set -euxo pipefail
+          docker run --rm --name ptero-install \
+            --memory=1024m --memory-swap=1024m --cpus=1 --pids-limit=256 \
+            --user 1000:1000 \
+            -v /mnt/ptero-real:/home/container \
+            -w /home/container/app \
+            node:22-bookworm \
+            sh -lc 'npm init -y >/dev/null && npm install --no-audit --no-fund webtorrent@latest'
+          echo '=== Disk after WebTorrent install ==='
+          df -h /mnt/ptero-real
+          du -sh /mnt/ptero-real/app
+
+      - name: Write test worker
+        shell: bash
+        run: |
+          sudo tee /mnt/ptero-real/app/download.mjs >/dev/null <<'NODE'
+          import WebTorrent from 'webtorrent'
+          import fs from 'node:fs'
+
+          const magnet = 'magnet:?xt=urn:btih:08ada5a7a6183aae1e09d831df6748d566095a10&dn=Sintel&tr=udp%3A%2F%2Fexplodie.org%3A6969&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969&tr=udp%3A%2F%2Ftracker.empire-js.us%3A1337&tr=udp%3A%2F%2Ftracker.leechers-paradise.org%3A6969&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=wss%3A%2F%2Ftracker.btorrent.xyz&tr=wss%3A%2F%2Ftracker.fastcast.nz&tr=wss%3A%2F%2Ftracker.openwebtorrent.com&ws=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2F&xs=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2Fsintel.torrent'
+
+          const client = new WebTorrent()
+          let peakRss = process.memoryUsage().rss
+          const started = Date.now()
+
+          const memWatch = setInterval(() => {
+            peakRss = Math.max(peakRss, process.memoryUsage().rss)
+          }, 250)
+
+          const timeout = setTimeout(() => {
+            console.error('TEST_TIMEOUT')
+            client.destroy(() => process.exit(2))
+          }, 8 * 60 * 1000)
+
+          const torrent = client.add(magnet, { path: '/home/container/downloads' })
+          torrent.on('error', e => console.error('TORRENT_ERROR', e))
+          client.on('error', e => console.error('CLIENT_ERROR', e))
+          torrent.on('noPeers', announceType => console.log(`NO_PEERS ${announceType}`))
+
+          torrent.on('ready', () => {
+            console.log(`READY name=${torrent.name}`)
+            console.log(`TOTAL_MIB ${(torrent.length/1048576).toFixed(1)}`)
+            console.log(`FILES ${torrent.files.length}`)
+            for (const f of torrent.files) console.log(`FILE ${(f.length/1048576).toFixed(1)}MiB ${f.name}`)
+          })
+
+          const progress = setInterval(() => {
+            const rss = process.memoryUsage().rss / 1048576
+            console.log(`PROGRESS pct=${(torrent.progress*100).toFixed(1)} downloadedMiB=${(torrent.downloaded/1048576).toFixed(1)} peers=${torrent.numPeers} speedMiBs=${(torrent.downloadSpeed/1048576).toFixed(2)} rssMiB=${rss.toFixed(1)}`)
+          }, 5000)
+
+          torrent.on('done', () => {
+            clearTimeout(timeout)
+            clearInterval(progress)
+            clearInterval(memWatch)
+            peakRss = Math.max(peakRss, process.memoryUsage().rss)
+            console.log(`DONE downloadedMiB=${(torrent.downloaded/1048576).toFixed(1)}`)
+            console.log(`ELAPSED_SECONDS ${((Date.now()-started)/1000).toFixed(1)}`)
+            console.log(`PEAK_NODE_RSS_MIB ${(peakRss/1048576).toFixed(1)}`)
+            const files = fs.readdirSync('/home/container/downloads', { recursive: true })
+            console.log(`OUTPUT_ENTRIES ${files.length}`)
+            client.destroy(err => process.exit(err ? 3 : 0))
+          })
+          NODE
+          sudo chown 1000:1000 /mnt/ptero-real/app/download.mjs
+
+      - name: Download real public test torrent under 1 GiB RAM and no swap
+        shell: bash
+        run: |
+          set -euxo pipefail
+          docker run --rm --name ptero-worker \
+            --memory=1024m --memory-swap=1024m --cpus=1 --pids-limit=256 \
+            --user 1000:1000 \
+            -v /mnt/ptero-real:/home/container \
+            -w /home/container/app \
+            node:22-bookworm \
+            node download.mjs
+
+      - name: Check resulting disk headroom
+        if: always()
+        shell: bash
+        run: |
+          echo '=== Final simulated Pterodactyl disk ==='
+          df -h /mnt/ptero-real || true
+          du -sh /mnt/ptero-real/app /mnt/ptero-real/downloads 2>/dev/null || true
+          find /mnt/ptero-real/downloads -maxdepth 2 -type f -printf '%s %p\n' 2>/dev/null || true
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: |
+          sudo umount /mnt/ptero-real >/dev/null 2>&1 || true
