@@ -40,6 +40,7 @@ jobs:
           transmission-create -o "$TORRENTS/sintel.torrent" "$SEED/Sintel-720p-test.mkv"
           transmission-create -o "$TORRENTS/bunny.torrent" "$SEED/Big-Buck-Bunny-720p-test.mkv"
           transmission-create -o "$TORRENTS/tears.torrent" "$SEED/Tears-of-Steel-720p-test.mkv"
+          chmod 644 "$TORRENTS"/*.torrent
 
           ls -lh "$TORRENTS"
           du -sh "$SEED"
@@ -73,7 +74,6 @@ jobs:
           transmission-remote 127.0.0.1:9091 -a "$TORRENTS/bunny.torrent" -w "$SEED"
           transmission-remote 127.0.0.1:9091 -a "$TORRENTS/tears.torrent" -w "$SEED"
 
-          # Wait until Transmission has verified all three source files and is ready to seed.
           for i in $(seq 1 120); do
             LIST="$(transmission-remote 127.0.0.1:9091 -l || true)"
             echo "$LIST"
