@@ -175,7 +175,7 @@ jobs:
             -v "$RUNNER_TEMP/ptero-test/code:/code:ro" \
             -w /code \
             node:22-bookworm \
-            /usr/bin/time -v node download.mjs
+            node download.mjs
 
       - name: Inspect simulated VPS after download
         if: always()
@@ -187,8 +187,6 @@ jobs:
           df -h /mnt/ptero-container || true
           du -sh /mnt/ptero-container || true
           ls -lh /mnt/ptero-container/downloads || true
-          echo '=== Docker worker status ==='
-          docker inspect ptero-seeder --format '{{json .HostConfig.Memory}} {{json .HostConfig.NanoCpus}}' || true
 
       - name: Cleanup
         if: always()
