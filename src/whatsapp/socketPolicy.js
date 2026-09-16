@@ -3,15 +3,16 @@
 // linked-device/app-state initialization. Blocking every sync type causes Lia's
 // explicit "DANGER" warning and can leave a newly linked device unusable.
 //
-// Therefore Night accepts all normal bootstrap sync classes and rejects only
-// HistorySyncType.FULL. The enum value is supplied by the installed Lia build
-// so this policy does not hard-code a protocol number.
-export function shouldSyncNightHistoryMessage({ syncType } = {}, fullHistorySyncType) {
-  if (fullHistorySyncType === undefined || fullHistorySyncType === null) return true;
+// WhatsApp/Baileys HistorySyncType.FULL is enum value 2. Night accepts every
+// other processable sync type and rejects FULL only. This matches Lia's safe
+// default while keeping syncFullHistory disabled.
+export const FULL_HISTORY_SYNC_TYPE = 2;
+
+export function shouldSyncNightHistoryMessage({ syncType } = {}, fullHistorySyncType = FULL_HISTORY_SYNC_TYPE) {
   return syncType !== fullHistorySyncType;
 }
 
-export function createNightSocketOptions({ auth, logger, browser, fullHistorySyncType }) {
+export function createNightSocketOptions({ auth, logger, browser, fullHistorySyncType = FULL_HISTORY_SYNC_TYPE }) {
   return {
     auth,
     logger,
