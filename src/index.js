@@ -8,6 +8,7 @@ import { HotModuleRegistry } from './hotload/registry.js';
 import { InboxStore } from './inbox/store.js';
 import { NightSessionManager } from './whatsapp/sessionManager.js';
 import { PairingService } from './whatsapp/pairingService.js';
+import { runStartupPairing } from './whatsapp/startupPairing.js';
 import { MessageDispatcher } from './router/dispatcher.js';
 import { CortexEventHub } from './api/eventHub.js';
 import { createCortexServer } from './api/server.js';
@@ -45,7 +46,14 @@ for(const sessionId of runtime.sessions){
 }
 
 const server=createCortexServer({config,registry,roleManager,sessions,pairing,inbox,access,events});
-server.listen(runtime.port,runtime.host,()=>logger.info({host:runtime.host,port:runtime.port},'Night Core listening'));
+server.listen(runtime.port,runtime.host,async()=>{
+  logger.info({host:runtime.host,port:runtime.port},'Night Core listening');
+  try {
+    await runStartupPairing({config,sessions,pairing,logger});
+  } catch (error) {
+    logger.error({err:error.message},'Startup pairing failed');
+  }
+});
 let shuttingDown=false;
 const shutdown=async signal=>{if(shuttingDown)return;shuttingDown=true;logger.info({signal},'Night shutting down');registry.stopWatching();server.close();await sessions.closeAll();inbox.close();setTimeout(()=>process.exit(1),5000).unref();process.exit(0);};
 process.on('SIGINT',()=>shutdown('SIGINT'));process.on('SIGTERM',()=>shutdown('SIGTERM'));
