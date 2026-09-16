@@ -5,6 +5,7 @@ import pino from 'pino';
 import { normalizeMessage } from './normalizeMessage.js';
 
 const normalizeId = value => String(value || '').trim().toLowerCase();
+const normalizeNumber = value => String(value || '').split('@')[0].split(':')[0].replace(/\D/g, '');
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 function statusCode(error) {
@@ -54,10 +55,22 @@ export class NightSessionManager extends EventEmitter {
         connectedAt: null,
         generation: 0,
         pairingReady: false,
-        chatLabels: new Map()
+        chatLabels: new Map(),
+        meJid: null,
+        botSentMessageIds: new Map()
       });
     }
     return this.sessions.get(id);
+  }
+
+  #rememberBotSentMessage(record, messageId) {
+    const id = String(messageId || '').trim();
+    if (!id) return;
+    const now = Date.now();
+    record.botSentMessageIds.set(id, now);
+    for (const [key, at] of record.botSentMessageIds) {
+      if (now - at > 5 * 60_000) record.botSentMessageIds.delete(key);
+    }
   }
 
   async connect(sessionId, { force = false } = {}) {
@@ -80,6 +93,7 @@ export class NightSessionManager extends EventEmitter {
 
     current.state = 'connecting';
     current.registered = Boolean(state?.creds?.registered);
+    current.meJid = state?.creds?.me?.id ?? current.meJid ?? null;
     current.qr = null;
     current.lastError = null;
     current.pairingReady = false;
@@ -103,6 +117,7 @@ export class NightSessionManager extends EventEmitter {
     sock.ev.on('creds.update', async update => {
       if (generation !== current.generation) return;
       current.registered = Boolean(update?.registered ?? state?.creds?.registered ?? current.registered);
+      current.meJid = update?.me?.id ?? state?.creds?.me?.id ?? current.meJid ?? null;
       await current.saveCreds();
       this.emit('creds', { sessionId: id, registered: current.registered });
     });
@@ -137,7 +152,7 @@ export class NightSessionManager extends EventEmitter {
         this.emit('qr', { sessionId: id, qr: update.qr, at: Date.now() });
       }
       if (update.connection === 'open') {
-        current.state = 'open'; current.registered = true; current.qr = null; current.lastError = null; current.connectedAt = Date.now(); current.reconnects = 0; current.pairingReady = false;
+        current.state = 'open'; current.registered = true; current.meJid = state?.creds?.me?.id ?? current.meJid ?? null; current.qr = null; current.lastError = null; current.connectedAt = Date.now(); current.reconnects = 0; current.pairingReady = false;
         this.roleManager?.markHealth(id, true);
         this.logger.info({ sessionId: id }, 'WhatsApp session connected');
         this.emit('session', this.sessionSnapshot(id));
@@ -272,17 +287,34 @@ export class NightSessionManager extends EventEmitter {
   getSocket(sessionId) { return this.#record(normalizeId(sessionId)).socket; }
   isRegistered(sessionId) { return Boolean(this.#record(normalizeId(sessionId)).registered); }
   hasStoredAuth(sessionId) { return fs.existsSync(path.join(this.authDir(sessionId), 'creds.json')); }
+  sessionOwnJid(sessionId) { return this.#record(normalizeId(sessionId)).meJid; }
+  isSessionAccountNumber(sessionId, number) {
+    const me = this.sessionOwnJid(sessionId);
+    const expected = normalizeNumber(number);
+    return Boolean(expected && me && normalizeNumber(me) === expected);
+  }
+  isBotSentMessage(sessionId, messageId) {
+    const record = this.#record(normalizeId(sessionId));
+    const id = String(messageId || '').trim();
+    if (!id) return false;
+    const at = record.botSentMessageIds.get(id);
+    if (!at) return false;
+    if (Date.now() - at > 5 * 60_000) { record.botSentMessageIds.delete(id); return false; }
+    return true;
+  }
 
   clearAuth(sessionId) {
     const id = normalizeId(sessionId);
     fs.rmSync(this.authDir(id), { recursive: true, force: true });
-    const record = this.#record(id); record.registered = false; record.qr = null; record.pairingReady = false;
+    const record = this.#record(id); record.registered = false; record.meJid = null; record.qr = null; record.pairingReady = false; record.botSentMessageIds.clear();
   }
 
   async sendViaSession(sessionId, jid, content, options = {}) {
     const id = normalizeId(sessionId); const record = this.#record(id);
     if (!record.socket || record.state !== 'open') throw new Error(`Session ${id} is not connected`);
-    return record.socket.sendMessage(jid, content, options);
+    const sent = await record.socket.sendMessage(jid, content, options);
+    this.#rememberBotSentMessage(record, sent?.key?.id);
+    return sent;
   }
 
   async send(role, jid, content, options = {}) {
@@ -307,7 +339,7 @@ export class NightSessionManager extends EventEmitter {
     if (record.reconnectTimer) clearTimeout(record.reconnectTimer); record.reconnectTimer = null;
     try { await record.socket?.logout?.(); } catch {}
     try { record.socket?.ws?.close?.(); } catch {}
-    record.socket = null; record.state = 'idle'; record.registered = false; record.qr = null; record.connectedAt = null; record.pairingReady = false;
+    record.socket = null; record.state = 'idle'; record.registered = false; record.meJid = null; record.qr = null; record.connectedAt = null; record.pairingReady = false; record.botSentMessageIds.clear();
     this.roleManager?.markHealth(id, false); fs.rmSync(this.authDir(id), { recursive: true, force: true }); this.emit('session', this.sessionSnapshot(id));
   }
 
