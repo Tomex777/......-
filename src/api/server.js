@@ -3,7 +3,7 @@ import { URL } from 'node:url';
 
 const json=(res,status,body)=>{res.writeHead(status,{'content-type':'application/json; charset=utf-8','cache-control':'no-store'});res.end(JSON.stringify(body));};
 const readJson=req=>new Promise((resolve,reject)=>{let body='';req.on('data',chunk=>{body+=chunk;if(body.length>1000000)reject(new Error('request-body-too-large'));});req.on('end',()=>{if(!body)return resolve({});try{resolve(JSON.parse(body));}catch(error){reject(error);}});req.on('error',reject);});
-function safeError(error){const message=String(error?.message||error||'unknown-error');if(/already paired/i.test(message))return{status:409,error:'already-paired'};if(/pairing already active/i.test(message))return{status:409,error:'pairing-active'};if(/unknown whatsapp session/i.test(message))return{status:404,error:'session-not-found'};if(/valid phone number/i.test(message))return{status:400,error:'invalid-phone-number'};return{status:500,error:'internal-error'};}
+function safeError(error){const message=String(error?.message||error||'unknown-error');if(/already paired/i.test(message))return{status:409,error:'already-paired'};if(/pairing already active/i.test(message))return{status:409,error:'pairing-active'};if(/unknown whatsapp session/i.test(message))return{status:404,error:'session-not-found'};if(/valid phone number/i.test(message))return{status:400,error:'invalid-phone-number'};if(/requires a deployment restart/i.test(message))return{status:409,error:'restart-required'};return{status:500,error:'internal-error'};}
 function installSse(req,res,events){res.writeHead(200,{'content-type':'text/event-stream; charset=utf-8','cache-control':'no-cache, no-transform','connection':'keep-alive','x-accel-buffering':'no'});res.write(`event: ready\ndata: ${JSON.stringify({ok:true,at:Date.now()})}\n\n`);const onEvent=event=>{res.write(`id: ${event.id}\n`);res.write(`event: ${event.type}\n`);res.write(`data: ${JSON.stringify(event)}\n\n`);};events.on('event',onEvent);const heartbeat=setInterval(()=>res.write(': ping\n\n'),20000);heartbeat.unref?.();const close=()=>{clearInterval(heartbeat);events.off('event',onEvent);};req.on('close',close);req.on('aborted',close);}
 
 export function createCortexServer({config,registry,roleManager,sessions,pairing,inbox,access,events}){
@@ -12,7 +12,16 @@ export function createCortexServer({config,registry,roleManager,sessions,pairing
     const url=new URL(req.url,'http://localhost');
     if(url.pathname==='/health')return json(res,200,{ok:true,service:'night-core',sessions:sessions.snapshot(),roles:roleManager.snapshot()});
     if(!auth(req))return json(res,401,{error:'unauthorized'});
+
     if(req.method==='GET'&&url.pathname==='/api/cortex/events')return installSse(req,res,events);
+    if(req.method==='GET'&&url.pathname==='/api/cortex/bootstrap')return json(res,200,{
+      service:'night-core',
+      sessions:sessions.snapshot(),
+      pairing:pairing.all(),
+      roles:roleManager.snapshot(),
+      allowedChats:access.list(),
+      config:config.publicSnapshot()
+    });
     if(req.method==='GET'&&url.pathname==='/api/cortex/config')return json(res,200,config.publicSnapshot());
     if(req.method==='GET'&&url.pathname==='/api/cortex/commands')return json(res,200,registry.snapshot());
     if(req.method==='GET'&&url.pathname==='/api/cortex/sessions')return json(res,200,{sessions:sessions.snapshot(),roles:roleManager.snapshot()});
@@ -21,11 +30,11 @@ export function createCortexServer({config,registry,roleManager,sessions,pairing
 
     if(req.method==='PUT'&&url.pathname==='/api/cortex/roles'){
       const body=await readJson(req);const next=roleManager.configure(body);
-      if(body.mode!=null)config.setOverride('WHATSAPP_ROLE_MODE',next.mode);
-      if(body.inboxSession!=null)config.setOverride('WHATSAPP_INBOX_SESSION',next.inboxSession);
-      if(body.aiSession!=null)config.setOverride('WHATSAPP_AI_SESSION',next.aiSession);
-      if(body.fallbackEnabled!=null)config.setOverride('WHATSAPP_FALLBACK_ENABLED',next.fallbackEnabled);
-      events.publish('roles.update',roleManager.snapshot());return json(res,200,roleManager.snapshot());
+      if(body.mode!=null)config.setRuntime('WHATSAPP_ROLE_MODE',next.mode);
+      if(body.inboxSession!=null)config.setRuntime('WHATSAPP_INBOX_SESSION',next.inboxSession);
+      if(body.aiSession!=null)config.setRuntime('WHATSAPP_AI_SESSION',next.aiSession);
+      if(body.fallbackEnabled!=null)config.setRuntime('WHATSAPP_FALLBACK_ENABLED',next.fallbackEnabled);
+      events.publish('roles.update',roleManager.snapshot());return json(res,200,{roles:roleManager.snapshot(),persistentSource:'environment'});
     }
 
     if(req.method==='POST'&&url.pathname==='/api/cortex/access'){
@@ -39,8 +48,16 @@ export function createCortexServer({config,registry,roleManager,sessions,pairing
     if(pairMatch){const sessionId=decodeURIComponent(pairMatch[1]);const action=pairMatch[2]??null;
       if(req.method==='GET'&&!action)return json(res,200,pairing.snapshot(sessionId));
       if(req.method==='DELETE'&&!action){const cancelled=await pairing.cancel(sessionId);return json(res,200,{cancelled,pairing:pairing.snapshot(sessionId)});}
-      if(req.method==='POST'&&action==='code'){const body=await readJson(req);const result=await pairing.startCode(sessionId,body.phoneNumber);return json(res,202,result);}
-      if(req.method==='POST'&&action==='qr'){const result=await pairing.startQr(sessionId);return json(res,202,result);}
+      if(req.method==='POST'&&action==='code'){
+        const body=await readJson(req);
+        const result=await pairing.startCode(sessionId,body.phoneNumber,{replaceExisting:Boolean(body.replaceExisting)});
+        return json(res,202,result);
+      }
+      if(req.method==='POST'&&action==='qr'){
+        const body=await readJson(req);
+        const result=await pairing.startQr(sessionId,{replaceExisting:Boolean(body.replaceExisting)});
+        return json(res,202,result);
+      }
     }
 
     const sessionMatch=url.pathname.match(/^\/api\/cortex\/sessions\/([^/]+)\/(reconnect|disconnect|logout)$/);
