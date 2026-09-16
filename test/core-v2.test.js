@@ -1,0 +1,17 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { EventEmitter } from 'node:events';
+import { AccessController } from '../src/security/access.js';
+import { SessionRoleManager } from '../src/whatsapp/roles.js';
+import { PairingService } from '../src/whatsapp/pairingService.js';
+import { MessageDispatcher } from '../src/router/dispatcher.js';
+const temp=name=>fs.mkdtempSync(path.join(os.tmpdir(),`night-v2-${name}-`));
+
+test('access allowlist persists without giving owner a bypass',()=>{const storagePath=path.join(temp('access'),'access.json');const first=new AccessController({ownerNumber:'2348000000000',storagePath});assert.equal(first.canEnter({chatJid:'x@g.us',senderJid:'2348000000000@s.whatsapp.net'}).allowed,false);first.allow('x@g.us');const second=new AccessController({ownerNumber:'2348000000000',storagePath});assert.equal(second.isAllowed('x@g.us'),true);});
+test('roles can be reconfigured and fallback leases remain sticky',()=>{const roles=new SessionRoleManager({sessions:['main','assistant']});roles.markHealth('main',false);roles.markHealth('assistant',true);assert.equal(roles.resolve('inbox'),'assistant');roles.markHealth('main',true);assert.equal(roles.resolve('inbox'),'assistant');roles.configure({mode:'main-all'});assert.equal(roles.resolve('inbox'),'main');assert.equal(roles.resolve('assistant'),'main');});
+class FakeSessions extends EventEmitter{constructor(){super();this.registered=false;}isRegistered(){return this.registered;}async requestPairingCode(){return'ABCD1234';}async connect(){}async disconnect(){}clearAuth(){}sessionSnapshot(id,{includeQr=false}={}){return{id,state:'connecting',registered:this.registered,lastError:null,...(includeQr?{qr:null}:{})};}}
+test('pairing service prevents code and QR collision for one session',async()=>{const sessions=new FakeSessions();const pairing=new PairingService({sessions,allowedSessions:['main'],attemptTtlMs:10000});const code=await pairing.startCode('main','2348000000000');assert.equal(code.method,'code');assert.equal(code.status,'waiting');assert.equal(code.code,'ABCD1234');await assert.rejects(()=>pairing.startQr('main'),/Pairing already active/);await pairing.cancel('main');});
+test('dispatcher lets owner bootstrap .allow but not arbitrary commands in disabled chat',async()=>{const storagePath=path.join(temp('dispatch'),'access.json');const access=new AccessController({ownerNumber:'2348000000000',storagePath});const registry={resolveCommand(name){if(name==='allow')return{name:'allow',ownerOnly:true,requiresAllowedChat:false,requiresAI:false,execute:async({message,access:a})=>a.allow(message.chatJid)};if(name==='health')return{name:'health',ownerOnly:false,requiresAllowedChat:true,requiresAI:false,execute:async()=>{}};return null;}};const sessions={sendViaSession:async()=>{}};const dispatcher=new MessageDispatcher({registry,access,sessions,config:{get:()=>true},roleManager:{}});const base={id:'1',sessionId:'assistant',chatJid:'2348000000000@s.whatsapp.net',participantJid:null,fromMe:false};const denied=await dispatcher.handle({...base,text:'.health'});assert.equal(denied.executed,false);assert.equal(denied.reason,'chat-disabled');const allowed=await dispatcher.handle({...base,text:'.allow'});assert.equal(allowed.executed,true);assert.equal(access.isAllowed(base.chatJid),true);});
