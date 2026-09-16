@@ -9,10 +9,13 @@ export class MessageDispatcher {
     if (!message || message.fromMe || !message.chatJid) return { handled: false, reason: 'ignored' };
     const parsed = this.parse(message.text || ''); if (!parsed) return { handled: false, reason: 'not-command' };
     const command = this.registry.resolveCommand(parsed.name);
-    const gate = this.access.canEnter({ chatJid: message.chatJid, senderJid: message.participantJid || message.chatJid, commandName: parsed.name });
+    let senderJid = message.senderJid || message.participantJid || message.chatJid;
+    if (senderJid?.endsWith?.('@lid') && typeof this.sessions?.resolveUserJid === 'function') {
+      senderJid = await this.sessions.resolveUserJid(message.sessionId, senderJid);
+    }
+    const gate = this.access.canEnter({ chatJid: message.chatJid, senderJid, commandName: parsed.name });
     if (!gate.allowed) return { handled: true, executed: false, reason: gate.reason };
     if (!command) return { handled: true, executed: false, reason: 'command-not-found' };
-    const senderJid = message.participantJid || message.chatJid;
     if (command.ownerOnly && !this.access.isOwner(senderJid)) return { handled: true, executed: false, reason: 'owner-only' };
     if (command.requiresAllowedChat && !this.access.isAllowed(message.chatJid)) return { handled: true, executed: false, reason: 'chat-disabled' };
     if (command.requiresAI && !this.config.get('AI_ENABLED', true)) return { handled: true, executed: false, reason: 'ai-disabled' };
