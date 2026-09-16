@@ -72,23 +72,37 @@ jobs:
           rm -rf /tmp/night-package
           mkdir -p /tmp/night-package
           cp index.js package.json README.md .env.example /tmp/night-package/
-          cp .env.example /tmp/night-package/.env
           cp -R src commands utils /tmp/night-package/
           cat > /tmp/night-package/BOT_HOSTING_README.txt <<'EOF'
-          NIGHT CORE — BOT-HOSTING PACKAGE
+          NIGHT CORE — BOT-HOSTING UPDATE PACKAGE
 
-          1. Edit .env in this folder.
+          UPDATE SAFETY
+          - This package intentionally contains NO .env file.
+          - This package intentionally contains NO data/ directory.
+          - Upload/extract it over an existing Night install without replacing your live .env or saved WhatsApp sessions.
+
+          FIRST INSTALL ONLY
+          1. Copy .env.example to .env yourself, then edit that .env.
           2. Set OWNER_NUMBER to your WhatsApp owner number (digits only).
           3. Set CORTEX_API_TOKEN to a long private random value.
           4. Keep WHATSAPP_SESSIONS=main,assistant for the two Night accounts.
-          5. For the pre-Cortex live pairing test, set PAIRING_SESSION=main and PAIRING_PHONE_NUMBER to the burner number in international digits-only format, e.g. 2348012345678.
+
+          PRE-CORTEX PAIRING TEST
+          5. Set PAIRING_SESSION to the slot being tested and PAIRING_PHONE_NUMBER to that WhatsApp number in international digits-only format.
           6. Start/restart Night. If that slot has no saved auth, Night prints one pairing code in the console. If it is already linked, startup pairing is skipped.
           7. After pairing is proven, clear PAIRING_PHONE_NUMBER. Cortex will trigger pairing through the API later.
+
+          HOSTING
           8. Bot-Hosting supplies SERVER_PORT automatically. Do not hard-code the hosted port in .env.
           9. Use index.js as the startup/entry file. No extra arguments are required.
 
-          Do not upload session credentials or data/ to GitHub.
+          Never upload session credentials or data/ to GitHub.
           EOF
+
+          # Deployment artifact must never overwrite live secrets or persisted state.
+          test ! -e /tmp/night-package/.env
+          test ! -e /tmp/night-package/data
+          find /tmp/night-package -maxdepth 2 -type f -print | sort
       - uses: actions/upload-artifact@v4
         with:
           name: Night_Core_BotHosting
