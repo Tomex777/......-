@@ -6,13 +6,29 @@ export class MessageDispatcher {
   }
   parse(text = '') { const match = String(text).trim().match(commandPattern); if (!match) return null; return { name: match[1].toLowerCase(), argsText: (match[2] || '').trim(), args: (match[2] || '').trim().split(/\s+/).filter(Boolean) }; }
   async handle(message, raw = null) {
-    if (!message || message.fromMe || !message.chatJid) return { handled: false, reason: 'ignored' };
+    if (!message || !message.chatJid) return { handled: false, reason: 'ignored' };
     const parsed = this.parse(message.text || ''); if (!parsed) return { handled: false, reason: 'not-command' };
-    const command = this.registry.resolveCommand(parsed.name);
+
     let senderJid = message.senderJid || message.participantJid || message.chatJid;
-    if (senderJid?.endsWith?.('@lid') && typeof this.sessions?.resolveUserJid === 'function') {
+
+    if (message.fromMe) {
+      if (typeof this.sessions?.isBotSentMessage === 'function' && this.sessions.isBotSentMessage(message.sessionId, message.id)) {
+        return { handled: false, reason: 'bot-output' };
+      }
+
+      let ownJid = typeof this.sessions?.sessionOwnJid === 'function'
+        ? this.sessions.sessionOwnJid(message.sessionId)
+        : senderJid;
+      if (ownJid?.endsWith?.('@lid') && typeof this.sessions?.resolveUserJid === 'function') {
+        ownJid = await this.sessions.resolveUserJid(message.sessionId, ownJid);
+      }
+      if (!this.access.isOwner(ownJid)) return { handled: false, reason: 'self-non-owner' };
+      senderJid = ownJid;
+    } else if (senderJid?.endsWith?.('@lid') && typeof this.sessions?.resolveUserJid === 'function') {
       senderJid = await this.sessions.resolveUserJid(message.sessionId, senderJid);
     }
+
+    const command = this.registry.resolveCommand(parsed.name);
     const gate = this.access.canEnter({ chatJid: message.chatJid, senderJid, commandName: parsed.name });
     if (!gate.allowed) return { handled: true, executed: false, reason: gate.reason };
     if (!command) return { handled: true, executed: false, reason: 'command-not-found' };
