@@ -15,6 +15,8 @@ export const CONFIG_SCHEMA = Object.freeze({
   WHATSAPP_INBOX_SESSION: { group: 'WhatsApp', type: 'string', default: 'main', apply: HOT },
   WHATSAPP_AI_SESSION: { group: 'WhatsApp', type: 'string', default: 'assistant', apply: HOT },
   WHATSAPP_FALLBACK_ENABLED: { group: 'WhatsApp', type: 'boolean', default: true, apply: HOT },
+  PAIRING_SESSION: { group: 'WhatsApp', type: 'string', default: 'main', required: false, apply: RESTART },
+  PAIRING_PHONE_NUMBER: { group: 'WhatsApp', type: 'string', required: false, apply: RESTART },
   NIGHT_WA_VERSION: { group: 'WhatsApp', type: 'string', required: false, apply: RESTART },
 
   AI_ENABLED: { group: 'AI', type: 'boolean', default: true, apply: HOT },
