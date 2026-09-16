@@ -4,19 +4,23 @@ on:
   push:
     branches: [main]
     paths:
+      - 'index.js'
       - 'src/**'
       - 'commands/**'
       - 'utils/**'
       - 'test/**'
       - 'package.json'
+      - '.env.example'
       - '.github/workflows/night-core-ci.yml'
   pull_request:
     paths:
+      - 'index.js'
       - 'src/**'
       - 'commands/**'
       - 'utils/**'
       - 'test/**'
       - 'package.json'
+      - '.env.example'
       - '.github/workflows/night-core-ci.yml'
   workflow_dispatch:
 
@@ -31,15 +35,22 @@ jobs:
           node-version: '24'
       - run: npm install --no-audit --no-fund
       - run: npm test
-      - run: node --check src/index.js
-      - name: Boot smoke test
+      - run: node --check index.js && node --check src/index.js
+      - name: Boot smoke test from project .env
         env:
           SERVER_PORT: '8799'
-          CORTEX_API_TOKEN: ci-test-token
-          OWNER_NUMBER: '2348000000000'
-          WHATSAPP_SESSIONS: main,assistant
         run: |
-          node src/index.js > /tmp/night-core.log 2>&1 &
+          cat > .env <<'EOF'
+          NODE_ENV=production
+          CORTEX_API_TOKEN=ci-test-token
+          OWNER_NUMBER=2348000000000
+          WHATSAPP_SESSIONS=main,assistant
+          WHATSAPP_ROLE_MODE=split
+          WHATSAPP_INBOX_SESSION=main
+          WHATSAPP_AI_SESSION=assistant
+          WHATSAPP_FALLBACK_ENABLED=true
+          EOF
+          node index.js > /tmp/night-core.log 2>&1 &
           NIGHT_PID=$!
           trap 'kill $NIGHT_PID || true; cat /tmp/night-core.log' EXIT
           for i in {1..30}; do
