@@ -20,6 +20,7 @@ export class NightSessionManager extends EventEmitter {
     this.pairingSettleMs = pairingSettleMs;
     this.sessions = new Map();
     this.logger = pino({ level: process.env.NIGHT_LOG_LEVEL || 'info' });
+    this.waLogger = pino({ level: process.env.NIGHT_WA_LOG_LEVEL || 'warn' });
     fs.mkdirSync(this.dataDir, { recursive: true, mode: 0o700 });
   }
 
@@ -40,7 +41,21 @@ export class NightSessionManager extends EventEmitter {
 
   #record(id) {
     if (!this.sessions.has(id)) {
-      this.sessions.set(id, { id, state: 'idle', registered: false, socket: null, reconnectTimer: null, reconnects: 0, saveCreds: null, qr: null, lastError: null, connectedAt: null, generation: 0, pairingReady: false });
+      this.sessions.set(id, {
+        id,
+        state: 'idle',
+        registered: false,
+        socket: null,
+        reconnectTimer: null,
+        reconnects: 0,
+        saveCreds: null,
+        qr: null,
+        lastError: null,
+        connectedAt: null,
+        generation: 0,
+        pairingReady: false,
+        chatLabels: new Map()
+      });
     }
     return this.sessions.get(id);
   }
@@ -73,7 +88,7 @@ export class NightSessionManager extends EventEmitter {
 
     const socketOptions = {
       auth: state,
-      logger: this.logger.child({ session: id }),
+      logger: this.waLogger.child({ session: id }),
       browser: Browsers.macOS('Chrome'),
       markOnlineOnConnect: false,
       syncFullHistory: false,
@@ -94,7 +109,17 @@ export class NightSessionManager extends EventEmitter {
 
     sock.ev.on('messages.upsert', ({ messages = [], type }) => {
       if (generation !== current.generation) return;
-      for (const raw of messages) this.emit('message', normalizeMessage(raw, { sessionId: id }), raw, { type });
+      for (const raw of messages) {
+        const message = normalizeMessage(raw, { sessionId: id });
+        const label = message.pushName;
+        if (label) {
+          for (const jid of [message.chatAltJid, message.senderJid, message.participantJid]) {
+            if (jid) current.chatLabels.set(jid, label);
+          }
+          if (message.chatJid && !message.chatJid.endsWith('@g.us')) current.chatLabels.set(message.chatJid, label);
+        }
+        this.emit('message', message, raw, { type });
+      }
     });
     sock.ev.on('messages.update', update => this.emit('messages.update', { sessionId: id, update }));
     sock.ev.on('messages.delete', update => this.emit('messages.delete', { sessionId: id, update }));
@@ -113,7 +138,9 @@ export class NightSessionManager extends EventEmitter {
       }
       if (update.connection === 'open') {
         current.state = 'open'; current.registered = true; current.qr = null; current.lastError = null; current.connectedAt = Date.now(); current.reconnects = 0; current.pairingReady = false;
-        this.roleManager?.markHealth(id, true); this.emit('session', this.sessionSnapshot(id));
+        this.roleManager?.markHealth(id, true);
+        this.logger.info({ sessionId: id }, 'WhatsApp session connected');
+        this.emit('session', this.sessionSnapshot(id));
       } else if (update.connection === 'close') {
         current.state = 'closed'; current.qr = null; current.connectedAt = null; current.lastError = String(update.lastDisconnect?.error ?? ''); current.pairingReady = false;
         this.roleManager?.markHealth(id, false); this.emit('session', this.sessionSnapshot(id));
@@ -213,6 +240,33 @@ export class NightSessionManager extends EventEmitter {
     } catch {
       return value;
     }
+  }
+
+  async describeChat(sessionId, jid) {
+    const id = normalizeId(sessionId);
+    const value = String(jid || '').trim();
+    if (!value) return 'Unknown chat';
+    const record = this.#record(id);
+    const socket = record.socket;
+
+    if (value.endsWith('@g.us')) {
+      try {
+        const metadata = await socket?.groupMetadata?.(value);
+        if (metadata?.subject) return metadata.subject;
+      } catch {}
+      return value;
+    }
+
+    const resolved = await this.resolveUserJid(id, value);
+    const label = record.chatLabels.get(value) || record.chatLabels.get(resolved) || null;
+    const numberJid = String(resolved || '').endsWith('@s.whatsapp.net') ? resolved : null;
+    const digits = numberJid ? numberJid.split('@')[0].split(':')[0].replace(/\D/g, '') : '';
+    const phone = digits ? `+${digits}` : null;
+
+    if (label && phone) return `${label} — ${phone}`;
+    if (label) return label;
+    if (phone) return phone;
+    return value;
   }
 
   getSocket(sessionId) { return this.#record(normalizeId(sessionId)).socket; }
