@@ -1,48 +1,97 @@
 # Night
 
-Night is a private WhatsApp assistant. **Cortex** is its private control plane.
+Night is a private WhatsApp assistant with Cortex as its control plane.
 
-This repository is the source of truth for Night Core, Cortex APIs, pairing/session infrastructure, hot-loaded commands/utilities, AI routing, media/storage pipelines, and integration tests.
+## Core status
 
-## Core rules
+The current core provides:
 
-- Default deny: Night only acts in explicitly allowed chats.
-- The owner does **not** bypass a disabled chat except for access-control bootstrap commands.
-- WhatsApp socket identity is separate from user permission.
-- Multiple paired numbers can be assigned roles (split or all-on-one) with controlled fallback.
-- Persistent services (WhatsApp sockets, DB, Blob/AI clients) are not recreated by command/util hot reloads.
-- Secrets never appear in Cortex responses.
-- Viewing Cortex Inbox is passive; sending is explicit.
-- View-once is normalized as a special wrapper and is not automatically archived.
-- Lia's Baileys fork is pinned to `0.3.18-final`.
+- two independent WhatsApp sessions using pinned `@itsliaaa/baileys` `0.3.18-final`
+- one pairing API for either configured account (pairing code or QR)
+- persistent multi-file Baileys auth under `data/sessions/<session>`
+- split / one-account / fallback role routing
+- strict default-deny chat access with owner-only bootstrap commands
+- hot-loaded commands and utils with last-known-good rollback
+- normalized inbound WhatsApp messages, including view-once wrappers
+- SQLite-backed Cortex Inbox for allowed chats only
+- Server-Sent Events for Cortex realtime updates
+- explicit outbound Inbox sending through the selected/active WhatsApp session
+- reconnect, disconnect, and logout lifecycle controls
+- configuration discovery with secret masking
 
-## Current bootstrap
+## Run
 
-Implemented in the first kernel:
-
-- dynamic config/ENV registry with secret masking and Groq key-pool counts
-- strict access controller
-- multi-session role manager with sticky controlled fallback
-- per-session pairing attempt lock
-- Baileys runtime session manager with bounded reconnect scheduling
-- hot-loaded command and utility registry with safe swap behavior
-- WhatsApp message normalizer including view-once wrappers
-- SQLite Inbox mirror using Node's built-in SQLite
-- authenticated Cortex API for config, commands, sessions, access, inbox read/send
-- AI routing skeleton
-- unit tests for the invariants above
-
-## Local start
+Node 22.5+ is required.
 
 ```bash
-cp .env.example .env
 npm install
-npm test
 npm start
 ```
 
-Runtime state lives under `data/` and is ignored by Git.
+Inject environment values through your process manager/container. At minimum configure `CORTEX_API_TOKEN`, `OWNER_NUMBER`, and `WHATSAPP_SESSIONS=main,assistant`.
 
-## Burner testing
+Runtime data is intentionally excluded from Git: `data/`, WhatsApp auth/session credentials, logs, and local environment files.
 
-Use a disposable WhatsApp number with no personal conversations. Keep its auth state isolated under `data/sessions/<sessionId>`, use private test chats/groups, revoke the linked device after testing if desired, and never commit session credentials.
+## Pairing API
+
+All Cortex endpoints except `/health` require `Authorization: Bearer <CORTEX_API_TOKEN>`.
+
+```text
+GET    /api/cortex/pairing
+GET    /api/cortex/pairing/:session
+POST   /api/cortex/pairing/:session/code
+POST   /api/cortex/pairing/:session/qr
+DELETE /api/cortex/pairing/:session
+GET    /api/cortex/events
+```
+
+Pairing-code body:
+
+```json
+{"phoneNumber":"<country-code-and-number>"}
+```
+
+QR updates can arrive through the realtime event stream or be read by polling the pairing state endpoint. New unpaired sessions do not auto-start QR pairing at server boot.
+
+## Session controls
+
+```text
+POST /api/cortex/sessions/:session/reconnect
+POST /api/cortex/sessions/:session/disconnect
+POST /api/cortex/sessions/:session/logout
+```
+
+`logout` clears that session's local WhatsApp credentials. `disconnect` leaves credentials intact.
+
+## Roles
+
+```text
+PUT /api/cortex/roles
+```
+
+Example:
+
+```json
+{
+  "mode": "split",
+  "inboxSession": "main",
+  "aiSession": "assistant",
+  "fallbackEnabled": true
+}
+```
+
+Fallback is sticky: if the preferred account fails, the healthy account can temporarily acquire the role. Night does not immediately jump back mid-task when the preferred account reconnects.
+
+## Access model
+
+Night is default-deny. Being the owner does not automatically activate a disabled DM or group.
+
+The owner can bootstrap access with hot-loaded commands such as `.allow`, `.disallow`, `.allowed`, and `.groups`. Cortex can also manage the allowlist through its authenticated API. Only allowed chats are written to the Cortex Inbox database.
+
+## Tests
+
+```bash
+npm test
+```
+
+CI intentionally does not pair a real WhatsApp account. Real integration testing should use an isolated burner account and private test chats/groups.
