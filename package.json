@@ -1,6 +1,6 @@
 {
   "name": "night-private-bot",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "type": "module",
   "description": "Night core and Cortex control plane",
@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@itsliaaa/baileys": "0.3.18-final",
+    "dotenv": "^16.4.7",
     "pino": "^9.9.0"
   }
 }
