@@ -4,10 +4,21 @@ export default {
   requiresAllowedChat: false,
   requiresAI: false,
   feature: 'access',
-  async execute({ access, reply }) {
+  async execute({ access, sessions, message, reply }) {
     const items = access.list();
-    const text = items.length ? items.join('\n') : 'No chats are enabled.';
-    await reply(text);
-    return items;
+    if (!items.length) {
+      await reply('No chats are enabled.');
+      return [];
+    }
+
+    const rows = [];
+    for (const jid of items) {
+      let label = jid;
+      try { label = await sessions.describeChat(message.sessionId, jid); } catch {}
+      rows.push(label === jid ? jid : `${label} — ${jid}`);
+    }
+
+    await reply(`Allowed chats:\n${rows.join('\n')}`);
+    return rows;
   }
 };
