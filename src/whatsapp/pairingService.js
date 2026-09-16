@@ -97,6 +97,14 @@ export class PairingService extends EventEmitter {
     attempt.status = status;
     attempt.updatedAt = Date.now();
     this.lock.release(id, attempt.token);
+
+    if (status === 'paired') {
+      attempt.code = null;
+      attempt.qr = null;
+      attempt.error = null;
+      this.attempts.delete(id);
+    }
+
     this.emit('update', this.snapshot(id));
     return true;
   }
