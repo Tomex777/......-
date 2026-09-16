@@ -5,16 +5,19 @@ import pino from 'pino';
 import { normalizeMessage } from './normalizeMessage.js';
 
 const normalizeId = value => String(value || '').trim().toLowerCase();
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 function statusCode(error) {
   return error?.output?.statusCode ?? error?.statusCode ?? error?.data?.statusCode ?? null;
 }
 
 export class NightSessionManager extends EventEmitter {
-  constructor({ dataDir = path.resolve('data/sessions'), roleManager } = {}) {
+  constructor({ dataDir = path.resolve('data/sessions'), roleManager, pairingReadyTimeoutMs = 15_000, pairingSettleMs = 1_500 } = {}) {
     super();
     this.dataDir = dataDir;
     this.roleManager = roleManager;
+    this.pairingReadyTimeoutMs = pairingReadyTimeoutMs;
+    this.pairingSettleMs = pairingSettleMs;
     this.sessions = new Map();
     this.logger = pino({ level: process.env.NIGHT_LOG_LEVEL || 'info' });
     fs.mkdirSync(this.dataDir, { recursive: true, mode: 0o700 });
@@ -37,7 +40,7 @@ export class NightSessionManager extends EventEmitter {
 
   #record(id) {
     if (!this.sessions.has(id)) {
-      this.sessions.set(id, { id, state: 'idle', registered: false, socket: null, reconnectTimer: null, reconnects: 0, saveCreds: null, qr: null, lastError: null, connectedAt: null, generation: 0 });
+      this.sessions.set(id, { id, state: 'idle', registered: false, socket: null, reconnectTimer: null, reconnects: 0, saveCreds: null, qr: null, lastError: null, connectedAt: null, generation: 0, pairingReady: false });
     }
     return this.sessions.get(id);
   }
@@ -64,6 +67,7 @@ export class NightSessionManager extends EventEmitter {
     current.registered = Boolean(state?.creds?.registered);
     current.qr = null;
     current.lastError = null;
+    current.pairingReady = false;
     current.saveCreds = async () => { await saveCreds(); this.#secureAuthDir(id); };
     this.roleManager?.markHealth(id, false);
 
@@ -99,17 +103,29 @@ export class NightSessionManager extends EventEmitter {
 
     sock.ev.on('connection.update', update => {
       if (generation !== current.generation) return;
-      if (update.qr) { current.qr = update.qr; this.emit('qr', { sessionId: id, qr: update.qr, at: Date.now() }); }
+      if (update.qr) {
+        current.qr = update.qr;
+        if (!current.registered && !current.pairingReady) {
+          current.pairingReady = true;
+          this.emit('pairing-ready', { sessionId: id, via: 'qr' });
+        }
+        this.emit('qr', { sessionId: id, qr: update.qr, at: Date.now() });
+      }
       if (update.connection === 'open') {
-        current.state = 'open'; current.registered = true; current.qr = null; current.lastError = null; current.connectedAt = Date.now(); current.reconnects = 0;
+        current.state = 'open'; current.registered = true; current.qr = null; current.lastError = null; current.connectedAt = Date.now(); current.reconnects = 0; current.pairingReady = false;
         this.roleManager?.markHealth(id, true); this.emit('session', this.sessionSnapshot(id));
       } else if (update.connection === 'close') {
-        current.state = 'closed'; current.qr = null; current.connectedAt = null; current.lastError = String(update.lastDisconnect?.error ?? '');
+        current.state = 'closed'; current.qr = null; current.connectedAt = null; current.lastError = String(update.lastDisconnect?.error ?? ''); current.pairingReady = false;
         this.roleManager?.markHealth(id, false); this.emit('session', this.sessionSnapshot(id));
         const code = statusCode(update.lastDisconnect?.error);
         if (code !== DisconnectReason.loggedOut) this.#scheduleReconnect(id); else current.registered = false;
       } else if (update.connection === 'connecting') {
-        current.state = 'connecting'; this.emit('session', this.sessionSnapshot(id));
+        current.state = 'connecting';
+        if (!current.registered && !current.pairingReady) {
+          current.pairingReady = true;
+          this.emit('pairing-ready', { sessionId: id, via: 'connecting' });
+        }
+        this.emit('session', this.sessionSnapshot(id));
       }
     });
 
@@ -117,15 +133,54 @@ export class NightSessionManager extends EventEmitter {
     return sock;
   }
 
+  async #waitForPairingReady(sessionId) {
+    const id = normalizeId(sessionId);
+    const record = this.#record(id);
+    if (record.pairingReady) return;
+
+    await new Promise((resolve, reject) => {
+      let timer;
+      const cleanup = () => {
+        clearTimeout(timer);
+        this.off('pairing-ready', onReady);
+        this.off('session', onSession);
+      };
+      const onReady = event => {
+        if (event?.sessionId !== id) return;
+        cleanup();
+        resolve();
+      };
+      const onSession = event => {
+        const eventId = event?.id ?? event?.sessionId;
+        if (eventId !== id || event?.state !== 'closed') return;
+        cleanup();
+        reject(new Error(record.lastError || `WhatsApp transport closed before pairing was ready for ${id}`));
+      };
+
+      this.on('pairing-ready', onReady);
+      this.on('session', onSession);
+      timer = setTimeout(() => {
+        cleanup();
+        reject(new Error(`Timed out waiting for WhatsApp pairing transport for ${id}`));
+      }, this.pairingReadyTimeoutMs);
+      timer.unref?.();
+
+      if (record.pairingReady) {
+        cleanup();
+        resolve();
+      }
+    });
+  }
+
   #scheduleReconnect(sessionId) {
     const record = this.#record(sessionId);
     if (record.reconnectTimer) return;
-    const delay = Math.min(30_000, 1_500 * (2 ** Math.min(record.reconnects++, 4)));
+    const delayMs = Math.min(30_000, 1_500 * (2 ** Math.min(record.reconnects++, 4)));
     record.reconnectTimer = setTimeout(async () => {
       record.reconnectTimer = null;
       try { await this.connect(sessionId, { force: true }); }
       catch (error) { this.logger.error({ sessionId, err: error }, 'reconnect failed'); record.lastError = error.message; this.#scheduleReconnect(sessionId); }
-    }, delay);
+    }, delayMs);
     record.reconnectTimer.unref?.();
   }
 
@@ -133,9 +188,16 @@ export class NightSessionManager extends EventEmitter {
     const id = normalizeId(sessionId);
     const digits = String(phoneNumber || '').replace(/\D/g, '');
     if (digits.length < 7 || digits.length > 16) throw new Error('valid phone number required');
-    const socket = await this.connect(id);
+
+    await this.connect(id);
     const record = this.#record(id);
     if (record.registered) throw new Error(`Session ${id} is already paired`);
+
+    await this.#waitForPairingReady(id);
+    if (this.pairingSettleMs > 0) await delay(this.pairingSettleMs);
+
+    if (record.registered) throw new Error(`Session ${id} became paired before code request`);
+    const socket = record.socket;
     if (typeof socket?.requestPairingCode !== 'function') throw new Error('Baileys pairing-code API unavailable');
     return socket.requestPairingCode(digits);
   }
@@ -147,7 +209,7 @@ export class NightSessionManager extends EventEmitter {
   clearAuth(sessionId) {
     const id = normalizeId(sessionId);
     fs.rmSync(this.authDir(id), { recursive: true, force: true });
-    const record = this.#record(id); record.registered = false; record.qr = null;
+    const record = this.#record(id); record.registered = false; record.qr = null; record.pairingReady = false;
   }
 
   async sendViaSession(sessionId, jid, content, options = {}) {
@@ -169,7 +231,7 @@ export class NightSessionManager extends EventEmitter {
     if (record.reconnectTimer) clearTimeout(record.reconnectTimer); record.reconnectTimer = null;
     try { record.socket?.end?.(new Error('Night disconnect')); } catch {}
     try { record.socket?.ws?.close?.(); } catch {}
-    record.socket = null; record.state = 'idle'; record.qr = null; record.connectedAt = null;
+    record.socket = null; record.state = 'idle'; record.qr = null; record.connectedAt = null; record.pairingReady = false;
     this.roleManager?.markHealth(id, false); this.emit('session', this.sessionSnapshot(id));
   }
 
@@ -178,7 +240,7 @@ export class NightSessionManager extends EventEmitter {
     if (record.reconnectTimer) clearTimeout(record.reconnectTimer); record.reconnectTimer = null;
     try { await record.socket?.logout?.(); } catch {}
     try { record.socket?.ws?.close?.(); } catch {}
-    record.socket = null; record.state = 'idle'; record.registered = false; record.qr = null; record.connectedAt = null;
+    record.socket = null; record.state = 'idle'; record.registered = false; record.qr = null; record.connectedAt = null; record.pairingReady = false;
     this.roleManager?.markHealth(id, false); fs.rmSync(this.authDir(id), { recursive: true, force: true }); this.emit('session', this.sessionSnapshot(id));
   }
 
