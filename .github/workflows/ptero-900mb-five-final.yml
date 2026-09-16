@@ -1,0 +1,219 @@
+name: VERIFY - Five 900MiB Pterodactyl torrent tests
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/ptero-900mb-five-final.yml'
+
+jobs:
+  five-900mb:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Install seeder tools
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo sh -c 'printf "#!/bin/sh\nexit 101\n" > /usr/sbin/policy-rc.d && chmod +x /usr/sbin/policy-rc.d'
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq transmission-daemon transmission-cli
+          sudo rm -f /usr/sbin/policy-rc.d
+          sudo pkill transmission-daemon 2>/dev/null || true
+
+      - name: Create and seed five 900 MiB torrents
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ROOT="$RUNNER_TEMP/five-900"
+          SEED="$ROOT/seed"
+          TORRENTS="$ROOT/torrents"
+          CFG="$ROOT/transmission"
+          mkdir -p "$SEED" "$TORRENTS" "$CFG"
+
+          names=(Sintel Big-Buck-Bunny Tears-of-Steel Cosmos-Laundromat Elephants-Dream)
+          for name in "${names[@]}"; do
+            fallocate -l 900M "$SEED/${name}-720p-test.mkv"
+            transmission-create -o "$TORRENTS/${name}.torrent" "$SEED/${name}-720p-test.mkv"
+          done
+          chmod 644 "$TORRENTS"/*.torrent
+
+          transmission-daemon --foreground --config-dir "$CFG" --download-dir "$SEED" \
+            --peerport 51413 --port 9091 --no-auth --allowed '127.0.0.1,172.*.*.*' \
+            > "$ROOT/transmission.log" 2>&1 &
+
+          for i in $(seq 1 30); do
+            transmission-remote 127.0.0.1:9091 -l >/dev/null 2>&1 && break
+            sleep 1
+          done
+
+          for t in "$TORRENTS"/*.torrent; do transmission-remote 127.0.0.1:9091 -a "$t" -w "$SEED"; done
+
+          for i in $(seq 1 60); do
+            LIST="$(transmission-remote 127.0.0.1:9091 -l || true)"
+            READY_COUNT="$(printf '%s\n' "$LIST" | grep -c '100%' || true)"
+            if [ "$READY_COUNT" -ge 5 ]; then echo "$LIST"; exit 0; fi
+            sleep 1
+          done
+          cat "$ROOT/transmission.log"
+          exit 1
+
+      - name: Create exact 3 GiB simulated server disk
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ROOT="$RUNNER_TEMP/five-900"
+          fallocate -l 3G "$ROOT/ptero.img"
+          mkfs.ext4 -q "$ROOT/ptero.img"
+          sudo mkdir -p /mnt/ptero-five
+          sudo mount -o loop "$ROOT/ptero.img" /mnt/ptero-five
+          sudo mkdir -p /mnt/ptero-five/app /mnt/ptero-five/downloads
+          sudo chown -R 1000:1000 /mnt/ptero-five
+          df -h /mnt/ptero-five
+
+      - name: Install WebTorrent inside quota
+        shell: bash
+        run: |
+          set -euxo pipefail
+          docker run --rm --memory=1024m --memory-swap=1024m --cpus=1 --pids-limit=256 \
+            --user 1000:1000 -v /mnt/ptero-five:/home/container -w /home/container/app \
+            node:22-bookworm sh -lc 'npm init -y >/dev/null && npm install --no-audit --no-fund webtorrent@latest'
+          du -sh /mnt/ptero-five/app
+          df -h /mnt/ptero-five
+
+      - name: Write measured downloader
+        shell: bash
+        run: |
+          sudo tee /mnt/ptero-five/app/run.mjs >/dev/null <<'NODE'
+          import WebTorrent from 'webtorrent'
+          import fs from 'node:fs'
+          import dns from 'node:dns/promises'
+
+          const tests = [
+            ['Sintel','/torrents/Sintel.torrent','Sintel-720p-test.mkv'],
+            ['Big Buck Bunny','/torrents/Big-Buck-Bunny.torrent','Big-Buck-Bunny-720p-test.mkv'],
+            ['Tears of Steel','/torrents/Tears-of-Steel.torrent','Tears-of-Steel-720p-test.mkv'],
+            ['Cosmos Laundromat','/torrents/Cosmos-Laundromat.torrent','Cosmos-Laundromat-720p-test.mkv'],
+            ['Elephants Dream','/torrents/Elephants-Dream.torrent','Elephants-Dream-720p-test.mkv']
+          ].map(([title,torrent,file])=>({title,torrent,file}))
+
+          const expected = 900 * 1024 * 1024
+          const hostIp = (await dns.lookup('host.docker.internal')).address
+          const results = []
+
+          function numFile(path) { try { return Number(fs.readFileSync(path,'utf8').trim()) } catch { return 0 } }
+          function cgroupMiB() { return numFile('/sys/fs/cgroup/memory.current') / 1048576 }
+          function cgroupPeakMiB() { return numFile('/sys/fs/cgroup/memory.peak') / 1048576 }
+          function memoryEvents() {
+            try {
+              return Object.fromEntries(fs.readFileSync('/sys/fs/cgroup/memory.events','utf8').trim().split('\n').map(l=>l.split(' ')).map(([k,v])=>[k,Number(v)]))
+            } catch { return {} }
+          }
+          function freeMiB() {
+            const s = fs.statfsSync('/home/container')
+            return Number(s.bavail) * Number(s.bsize) / 1048576
+          }
+          async function destroy(client) { await new Promise(r=>client.destroy(()=>r())) }
+
+          for (const test of tests) {
+            fs.rmSync('/home/container/downloads',{recursive:true,force:true})
+            fs.mkdirSync('/home/container/downloads',{recursive:true})
+
+            const freeBefore = freeMiB()
+            const eventsBefore = memoryEvents()
+            const client = new WebTorrent({ dht:false })
+            const torrent = client.add(fs.readFileSync(test.torrent), { path:'/home/container/downloads' })
+            if (!torrent.infoHash) await new Promise(r=>torrent.once('infoHash',r))
+            torrent.addPeer(`${hostIp}:51413`)
+
+            const started = Date.now()
+            let peakRss = process.memoryUsage().rss/1048576
+            let peakCgObserved = cgroupMiB()
+            let minFree = freeBefore
+            let peakPeers = torrent.numPeers
+
+            console.log(`START ${test.title} freeBeforeMiB=${freeBefore.toFixed(1)}`)
+            const monitor = setInterval(()=>{
+              peakRss = Math.max(peakRss, process.memoryUsage().rss/1048576)
+              peakCgObserved = Math.max(peakCgObserved, cgroupMiB())
+              minFree = Math.min(minFree, freeMiB())
+              peakPeers = Math.max(peakPeers, torrent.numPeers)
+            },250)
+
+            const timeout = setTimeout(()=>client.destroy(()=>process.exit(20)), 6*60*1000)
+            await new Promise((resolve,reject)=>{
+              torrent.once('done',resolve)
+              torrent.once('error',reject)
+              client.once('error',reject)
+            })
+            clearInterval(monitor); clearTimeout(timeout)
+
+            peakRss = Math.max(peakRss, process.memoryUsage().rss/1048576)
+            peakCgObserved = Math.max(peakCgObserved, cgroupMiB())
+            minFree = Math.min(minFree, freeMiB())
+            const freeAtDone = freeMiB()
+            const elapsed = (Date.now()-started)/1000
+            const out = `/home/container/downloads/${test.file}`
+            const bytes = fs.statSync(out).size
+            if (bytes !== expected) throw new Error(`${test.title}: size mismatch ${bytes}`)
+            const eventsAfter = memoryEvents()
+
+            const result = {
+              title:test.title,
+              bytes,
+              elapsedSeconds:+elapsed.toFixed(2),
+              avgMiBs:+((bytes/1048576)/elapsed).toFixed(2),
+              peakRssMiB:+peakRss.toFixed(1),
+              peakCgroupObservedMiB:+peakCgObserved.toFixed(1),
+              kernelCgroupPeakMiB:+cgroupPeakMiB().toFixed(1),
+              freeBeforeMiB:+freeBefore.toFixed(1),
+              freeAtDoneMiB:+freeAtDone.toFixed(1),
+              minFreeDiskMiB:+minFree.toFixed(1),
+              peakPeers,
+              oomDelta:(eventsAfter.oom||0)-(eventsBefore.oom||0),
+              oomKillDelta:(eventsAfter.oom_kill||0)-(eventsBefore.oom_kill||0)
+            }
+            console.log('DONE '+JSON.stringify(result))
+
+            await destroy(client)
+            fs.rmSync('/home/container/downloads',{recursive:true,force:true})
+            fs.mkdirSync('/home/container/downloads',{recursive:true})
+            result.freeAfterCleanupMiB = +freeMiB().toFixed(1)
+            results.push(result)
+          }
+
+          fs.writeFileSync('/home/container/results.json',JSON.stringify(results,null,2))
+          console.log('ALL_FIVE_PASSED')
+          NODE
+          sudo chown 1000:1000 /mnt/ptero-five/app/run.mjs
+
+      - name: Run five transfers under exact Pterodactyl limits
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ROOT="$RUNNER_TEMP/five-900"
+          docker run --rm --name ptero-five-worker \
+            --memory=1024m --memory-swap=1024m --cpus=1 --pids-limit=256 \
+            --add-host=host.docker.internal:host-gateway --user 1000:1000 \
+            -v /mnt/ptero-five:/home/container -v "$ROOT/torrents:/torrents:ro" \
+            -w /home/container/app node:22-bookworm node run.mjs
+
+      - name: Print results
+        if: always()
+        shell: bash
+        run: |
+          echo '=== RESULTS ==='
+          cat /mnt/ptero-five/results.json 2>/dev/null || true
+          echo '=== DISK AFTER CLEANUP ==='
+          df -h /mnt/ptero-five || true
+          du -sh /mnt/ptero-five/app /mnt/ptero-five/downloads 2>/dev/null || true
+          echo '=== SEEDER ==='
+          transmission-remote 127.0.0.1:9091 -l || true
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: |
+          transmission-remote 127.0.0.1:9091 --exit >/dev/null 2>&1 || true
+          sudo umount /mnt/ptero-five >/dev/null 2>&1 || true
