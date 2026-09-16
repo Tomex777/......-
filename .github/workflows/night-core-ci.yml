@@ -65,3 +65,29 @@ jobs:
           kill $NIGHT_PID
           wait $NIGHT_PID || true
           trap - EXIT
+      - name: Build Bot-Hosting project package
+        run: |
+          rm -rf /tmp/night-package
+          mkdir -p /tmp/night-package
+          cp index.js package.json README.md .env.example /tmp/night-package/
+          cp .env.example /tmp/night-package/.env
+          cp -R src commands utils /tmp/night-package/
+          cat > /tmp/night-package/BOT_HOSTING_README.txt <<'EOF'
+          NIGHT CORE — BOT-HOSTING PACKAGE
+
+          1. Edit .env in this folder.
+          2. Set OWNER_NUMBER to your WhatsApp owner number (digits only).
+          3. Set CORTEX_API_TOKEN to a long private random value.
+          4. Keep WHATSAPP_SESSIONS=main,assistant for the two Night accounts.
+          5. Bot-Hosting supplies SERVER_PORT automatically; leave it blank in .env.
+          6. Use index.js as the startup/entry file. No extra arguments are required.
+          7. Pairing is always available through Night Core while the process is running.
+
+          Do not upload session credentials or data/ to GitHub.
+          EOF
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Night_Core_BotHosting
+          path: /tmp/night-package/
+          if-no-files-found: error
+          retention-days: 1
