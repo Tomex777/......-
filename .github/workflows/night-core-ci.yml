@@ -71,33 +71,8 @@ jobs:
         run: |
           rm -rf /tmp/night-package
           mkdir -p /tmp/night-package
-          cp index.js package.json README.md .env.example /tmp/night-package/
+          cp index.js package.json .env.example /tmp/night-package/
           cp -R src commands utils /tmp/night-package/
-          cat > /tmp/night-package/BOT_HOSTING_README.txt <<'EOF'
-          NIGHT CORE — BOT-HOSTING UPDATE PACKAGE
-
-          UPDATE SAFETY
-          - This package intentionally contains NO .env file.
-          - This package intentionally contains NO data/ directory.
-          - Upload/extract it over an existing Night install without replacing your live .env or saved WhatsApp sessions.
-
-          FIRST INSTALL ONLY
-          1. Copy .env.example to .env yourself, then edit that .env.
-          2. Set OWNER_NUMBER to your WhatsApp owner number (digits only).
-          3. Set CORTEX_API_TOKEN to a long private random value.
-          4. Keep WHATSAPP_SESSIONS=main,assistant for the two Night accounts.
-
-          PRE-CORTEX PAIRING TEST
-          5. Set PAIRING_SESSION to the slot being tested and PAIRING_PHONE_NUMBER to that WhatsApp number in international digits-only format.
-          6. Start/restart Night. If that slot has no saved auth, Night prints one pairing code in the console. If it is already linked, startup pairing is skipped.
-          7. After pairing is proven, clear PAIRING_PHONE_NUMBER. Cortex will trigger pairing through the API later.
-
-          HOSTING
-          8. Bot-Hosting supplies SERVER_PORT automatically. Do not hard-code the hosted port in .env.
-          9. Use index.js as the startup/entry file. No extra arguments are required.
-
-          Never upload session credentials or data/ to GitHub.
-          EOF
 
           # Deployment artifact must never overwrite live secrets or persisted state.
           test ! -e /tmp/night-package/.env
