@@ -22,8 +22,7 @@ jobs:
           mkfs.ext4 -q "$ROOT/disk.img"
           sudo mkdir -p /mnt/ptero-real
           sudo mount -o loop "$ROOT/disk.img" /mnt/ptero-real
-          sudo chown -R 1000:1000 /mnt/ptero-real
-          mkdir -p /mnt/ptero-real/app /mnt/ptero-real/downloads
+          sudo mkdir -p /mnt/ptero-real/app /mnt/ptero-real/downloads
           sudo chown -R 1000:1000 /mnt/ptero-real
           df -h /mnt/ptero-real
 
