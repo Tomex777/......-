@@ -35,7 +35,7 @@ jobs:
           node-version: '24'
       - run: npm install --no-audit --no-fund
       - run: npm test
-      - run: node --check index.js && node --check src/index.js
+      - run: node --check index.js && node --check src/index.js && node --check src/whatsapp/startupPairing.js
       - name: Boot smoke test from project .env
         env:
           SERVER_PORT: '8799'
@@ -49,6 +49,8 @@ jobs:
           WHATSAPP_INBOX_SESSION=main
           WHATSAPP_AI_SESSION=assistant
           WHATSAPP_FALLBACK_ENABLED=true
+          PAIRING_SESSION=main
+          PAIRING_PHONE_NUMBER=
           EOF
           node index.js > /tmp/night-core.log 2>&1 &
           NIGHT_PID=$!
@@ -79,9 +81,11 @@ jobs:
           2. Set OWNER_NUMBER to your WhatsApp owner number (digits only).
           3. Set CORTEX_API_TOKEN to a long private random value.
           4. Keep WHATSAPP_SESSIONS=main,assistant for the two Night accounts.
-          5. Bot-Hosting supplies SERVER_PORT automatically; leave it blank in .env.
-          6. Use index.js as the startup/entry file. No extra arguments are required.
-          7. Pairing is always available through Night Core while the process is running.
+          5. For the pre-Cortex live pairing test, set PAIRING_SESSION=main and PAIRING_PHONE_NUMBER to the burner number in international digits-only format, e.g. 2348012345678.
+          6. Start/restart Night. If that slot has no saved auth, Night prints one pairing code in the console. If it is already linked, startup pairing is skipped.
+          7. After pairing is proven, clear PAIRING_PHONE_NUMBER. Cortex will trigger pairing through the API later.
+          8. Bot-Hosting supplies SERVER_PORT automatically. Do not hard-code the hosted port in .env.
+          9. Use index.js as the startup/entry file. No extra arguments are required.
 
           Do not upload session credentials or data/ to GitHub.
           EOF
