@@ -3,6 +3,7 @@ import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import pino from 'pino';
 import { normalizeMessage } from './normalizeMessage.js';
+import { createNightSocketOptions } from './socketPolicy.js';
 
 const normalizeId = value => String(value || '').trim().toLowerCase();
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -86,14 +87,11 @@ export class NightSessionManager extends EventEmitter {
     current.saveCreds = async () => { await saveCreds(); this.#secureAuthDir(id); };
     this.roleManager?.markHealth(id, false);
 
-    const socketOptions = {
+    const socketOptions = createNightSocketOptions({
       auth: state,
       logger: this.waLogger.child({ session: id }),
-      browser: Browsers.macOS('Chrome'),
-      markOnlineOnConnect: false,
-      syncFullHistory: false,
-      generateHighQualityLinkPreview: false
-    };
+      browser: Browsers.macOS('Chrome')
+    });
     const override = String(process.env.NIGHT_WA_VERSION || '').trim();
     if (override) socketOptions.version = override.split(',').map(Number);
 
