@@ -4,6 +4,7 @@ import { EventEmitter } from 'node:events';
 import pino from 'pino';
 import { normalizeMessage } from './normalizeMessage.js';
 import { createNightSocketOptions } from './socketPolicy.js';
+import { resolveWaVersion } from './waVersion.js';
 
 const normalizeId = value => String(value || '').trim().toLowerCase();
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -90,10 +91,14 @@ export class NightSessionManager extends EventEmitter {
     const socketOptions = createNightSocketOptions({
       auth: state,
       logger: this.waLogger.child({ session: id }),
-      browser: Browsers.macOS('Chrome')
+      browser: Browsers.windows('Chrome')
     });
-    const override = String(process.env.NIGHT_WA_VERSION || '').trim();
-    if (override) socketOptions.version = override.split(',').map(Number);
+    const resolvedVersion = await resolveWaVersion(lib, { logger: this.logger });
+    if (resolvedVersion.version) socketOptions.version = resolvedVersion.version;
+    this.logger.info(
+      { sessionId: id, source: resolvedVersion.source, version: resolvedVersion.version?.join('.') ?? 'library-default' },
+      'WhatsApp Web version selected'
+    );
 
     const sock = makeWASocket(socketOptions);
     current.socket = sock;
