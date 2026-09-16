@@ -1,0 +1,138 @@
+name: Pterodactyl 1GB RAM 3GB disk simulation v2
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/ptero-sim-v2.yml'
+
+jobs:
+  simulate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Build 900 MiB legal synthetic torrent test
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ROOT="$RUNNER_TEMP/ptero-v2"
+          mkdir -p "$ROOT/code" "$ROOT/seed" "$ROOT/shared"
+          cd "$ROOT/code"
+          printf '{"type":"module","dependencies":{"webtorrent":"latest"}}' > package.json
+          npm install --no-audit --no-fund
+          fallocate -l 900M "$ROOT/seed/episode-720p-test.bin"
+
+          cat > seed.mjs <<'NODE'
+          import WebTorrent from 'webtorrent'
+          import fs from 'node:fs'
+          const client = new WebTorrent({ torrentPort: 6881, dht: false })
+          client.seed('/seed/episode-720p-test.bin', { announce: [] }, t => {
+            console.log(`SEED_READY bytes=${t.length} pieces=${t.pieces.length}`)
+            fs.writeFileSync('/shared/magnet.txt', t.magnetURI)
+          })
+          setInterval(() => {}, 60000)
+          NODE
+
+          cat > download.mjs <<'NODE'
+          import WebTorrent from 'webtorrent'
+          import fs from 'node:fs'
+          import dns from 'node:dns/promises'
+
+          const magnet = fs.readFileSync('/shared/magnet.txt', 'utf8').trim()
+          const client = new WebTorrent({ dht: false })
+          client.throttleDownload(20 * 1024 * 1024)
+          let peakRss = process.memoryUsage().rss
+          const start = Date.now()
+          const watch = setInterval(() => {
+            peakRss = Math.max(peakRss, process.memoryUsage().rss)
+          }, 200)
+          const deadline = setTimeout(async () => {
+            console.error('FAIL timeout')
+            await client.destroy().catch(() => {})
+            process.exit(2)
+          }, 12 * 60 * 1000)
+
+          const torrent = client.add(magnet, { path: '/home/container/downloads' })
+          const ip = (await dns.lookup('ptero-seeder')).address
+          torrent.addPeer(`${ip}:6881`)
+
+          torrent.on('ready', () => {
+            console.log(`READY bytes=${torrent.length} pieceBytes=${torrent.pieceLength} pieces=${torrent.pieces.length}`)
+          })
+          torrent.on('error', e => console.error('TORRENT_ERROR', e))
+          client.on('error', e => console.error('CLIENT_ERROR', e))
+
+          const report = setInterval(() => {
+            const rss = process.memoryUsage().rss / 1048576
+            console.log(`PROGRESS pct=${(torrent.progress*100).toFixed(1)} downloadedMiB=${(torrent.downloaded/1048576).toFixed(1)} peers=${torrent.numPeers} rssMiB=${rss.toFixed(1)}`)
+          }, 5000)
+
+          torrent.on('done', async () => {
+            clearInterval(report)
+            clearInterval(watch)
+            clearTimeout(deadline)
+            peakRss = Math.max(peakRss, process.memoryUsage().rss)
+            const file = '/home/container/downloads/episode-720p-test.bin'
+            const bytes = fs.statSync(file).size
+            console.log(`DONE bytes=${bytes}`)
+            console.log(`ELAPSED_SECONDS ${((Date.now()-start)/1000).toFixed(1)}`)
+            console.log(`PEAK_NODE_RSS_MIB ${(peakRss/1048576).toFixed(1)}`)
+            if (bytes !== 943718400) process.exitCode = 3
+            await client.destroy()
+          })
+          NODE
+
+      - name: Create exactly 3 GiB writable server storage
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ROOT="$RUNNER_TEMP/ptero-v2"
+          fallocate -l 3G "$ROOT/disk.img"
+          mkfs.ext4 -q "$ROOT/disk.img"
+          sudo mkdir -p /mnt/ptero-v2
+          sudo mount -o loop "$ROOT/disk.img" /mnt/ptero-v2
+          sudo chown "$(id -u):$(id -g)" /mnt/ptero-v2
+          mkdir -p /mnt/ptero-v2/downloads /mnt/ptero-v2/app
+          fallocate -l 250M /mnt/ptero-v2/app/worker-footprint.bin
+          df -h /mnt/ptero-v2
+
+      - name: Seed the 900 MiB test payload
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ROOT="$RUNNER_TEMP/ptero-v2"
+          docker network create ptero-v2-net
+          docker run -d --name ptero-seeder --network ptero-v2-net \
+            -v "$ROOT/seed:/seed:ro" -v "$ROOT/shared:/shared" -v "$ROOT/code:/code:ro" -w /code \
+            node:22-bookworm node seed.mjs
+          for i in $(seq 1 60); do test -s "$ROOT/shared/magnet.txt" && exit 0; sleep 1; done
+          docker logs ptero-seeder
+          exit 1
+
+      - name: Download like a 1 GiB Pterodactyl server
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ROOT="$RUNNER_TEMP/ptero-v2"
+          docker run --rm --name ptero-worker --network ptero-v2-net \
+            --memory=1024m --memory-swap=1024m --cpus=1 --pids-limit=256 \
+            -v /mnt/ptero-v2:/home/container -v "$ROOT/shared:/shared:ro" -v "$ROOT/code:/code:ro" -w /code \
+            node:22-bookworm node download.mjs
+
+      - name: Verify disk result
+        if: always()
+        shell: bash
+        run: |
+          echo '=== simulated Pterodactyl disk ==='
+          df -h /mnt/ptero-v2 || true
+          du -sh /mnt/ptero-v2 || true
+          ls -lh /mnt/ptero-v2/downloads || true
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: |
+          docker rm -f ptero-seeder >/dev/null 2>&1 || true
+          docker network rm ptero-v2-net >/dev/null 2>&1 || true
+          sudo umount /mnt/ptero-v2 >/dev/null 2>&1 || true
