@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import path from 'node:path';
 import pino from 'pino';
 import { ConfigRegistry } from './config/registry.js';
