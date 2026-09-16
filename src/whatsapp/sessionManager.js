@@ -202,6 +202,19 @@ export class NightSessionManager extends EventEmitter {
     return socket.requestPairingCode(digits);
   }
 
+  async resolveUserJid(sessionId, jid) {
+    const value = String(jid || '').trim();
+    if (!value || !value.endsWith('@lid')) return value;
+    const socket = this.#record(normalizeId(sessionId)).socket;
+    if (typeof socket?.findUserId !== 'function') return value;
+    try {
+      const ids = await socket.findUserId(value);
+      return ids?.phoneNumber || value;
+    } catch {
+      return value;
+    }
+  }
+
   getSocket(sessionId) { return this.#record(normalizeId(sessionId)).socket; }
   isRegistered(sessionId) { return Boolean(this.#record(normalizeId(sessionId)).registered); }
   hasStoredAuth(sessionId) { return fs.existsSync(path.join(this.authDir(sessionId), 'creds.json')); }
