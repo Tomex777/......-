@@ -5,7 +5,8 @@ const RESTART = 'restart';
 
 export const CONFIG_SCHEMA = Object.freeze({
   NODE_ENV: { group: 'Runtime', type: 'select', options: ['development', 'production', 'test'], default: 'production', apply: RESTART },
-  PORT: { group: 'Runtime', type: 'number', default: 8787, apply: RESTART },
+  SERVER_PORT: { group: 'Runtime', type: 'number', required: false, apply: RESTART },
+  PORT: { group: 'Runtime', type: 'number', default: 8787, required: false, apply: RESTART },
   CORTEX_API_TOKEN: { group: 'Security', type: 'secret', required: true, apply: RESTART },
   OWNER_NUMBER: { group: 'Access', type: 'string', required: true, apply: RESTART },
 
