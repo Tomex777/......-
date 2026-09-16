@@ -1,0 +1,115 @@
+name: Torrent smoke test
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/torrent-smoke-test.yml'
+
+jobs:
+  webtorrent:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Show runner resources
+        run: |
+          echo '=== Disk ==='
+          df -h /
+          echo '=== Memory ==='
+          free -h
+          echo '=== Node ==='
+          node --version
+
+      - name: Install WebTorrent
+        run: |
+          mkdir -p "$RUNNER_TEMP/torrent-test"
+          cd "$RUNNER_TEMP/torrent-test"
+          npm init -y >/dev/null
+          npm install --no-audit --no-fund webtorrent@latest
+
+      - name: Download Creative Commons test video through BitTorrent
+        shell: bash
+        run: |
+          cd "$RUNNER_TEMP/torrent-test"
+          mkdir -p downloads
+          cat > smoke.mjs <<'NODE'
+          import WebTorrent from 'webtorrent'
+          import fs from 'node:fs'
+
+          // Sintel is a Creative Commons movie listed by WebTorrent specifically for testing.
+          const magnet = 'magnet:?xt=urn:btih:08ada5a7a6183aae1e09d831df6748d566095a10&dn=Sintel&tr=udp%3A%2F%2Fexplodie.org%3A6969&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969&tr=udp%3A%2F%2Ftracker.empire-js.us%3A1337&tr=udp%3A%2F%2Ftracker.leechers-paradise.org%3A6969&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=wss%3A%2F%2Ftracker.btorrent.xyz&tr=wss%3A%2F%2Ftracker.fastcast.nz&tr=wss%3A%2F%2Ftracker.openwebtorrent.com&ws=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2F&xs=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2Fsintel.torrent'
+
+          const client = new WebTorrent()
+          let peakRss = process.memoryUsage().rss
+          const memoryWatch = setInterval(() => {
+            peakRss = Math.max(peakRss, process.memoryUsage().rss)
+          }, 1000)
+
+          const failTimer = setTimeout(async () => {
+            console.error('TEST_TIMEOUT after 12 minutes')
+            clearInterval(memoryWatch)
+            await client.destroy().catch(() => {})
+            process.exit(2)
+          }, 12 * 60 * 1000)
+
+          client.on('error', err => {
+            console.error('CLIENT_ERROR', err)
+          })
+
+          const torrent = client.add(magnet, { path: './downloads' })
+
+          torrent.on('error', err => {
+            console.error('TORRENT_ERROR', err)
+          })
+
+          torrent.on('ready', () => {
+            console.log(`READY name=${torrent.name}`)
+            console.log(`INFO_HASH ${torrent.infoHash}`)
+            console.log(`TOTAL_BYTES ${torrent.length}`)
+            console.log(`PIECE_LENGTH ${torrent.pieceLength}`)
+            console.log(`FILES ${torrent.files.length}`)
+            for (const file of torrent.files) console.log(`FILE ${file.length} ${file.name}`)
+          })
+
+          const progress = setInterval(() => {
+            if (!torrent.length) return
+            console.log(`PROGRESS ${(torrent.progress * 100).toFixed(1)}% downloaded=${torrent.downloaded} peers=${torrent.numPeers} speed=${torrent.downloadSpeed()}`)
+          }, 10000)
+
+          torrent.on('done', async () => {
+            clearTimeout(failTimer)
+            clearInterval(progress)
+            clearInterval(memoryWatch)
+            peakRss = Math.max(peakRss, process.memoryUsage().rss)
+            console.log(`DONE downloaded=${torrent.downloaded} total=${torrent.length}`)
+            console.log(`PEAK_NODE_RSS_BYTES ${peakRss}`)
+            console.log(`PEAK_NODE_RSS_MIB ${(peakRss / 1024 / 1024).toFixed(1)}`)
+
+            const files = fs.readdirSync('./downloads', { recursive: true })
+            console.log(`OUTPUT_ENTRIES ${files.length}`)
+
+            if (torrent.downloaded < torrent.length) {
+              console.error('INCOMPLETE_DOWNLOAD')
+              process.exitCode = 3
+            }
+
+            await client.destroy()
+          })
+          NODE
+
+          /usr/bin/time -v timeout 13m node smoke.mjs
+
+      - name: Show disk usage after download
+        if: always()
+        run: |
+          echo '=== Test directory ==='
+          du -sh "$RUNNER_TEMP/torrent-test" || true
+          echo '=== Disk ==='
+          df -h /
+          echo '=== Memory ==='
+          free -h
+
+      - name: Clean up
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/torrent-test"
