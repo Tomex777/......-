@@ -32,3 +32,25 @@ jobs:
       - run: npm install --no-audit --no-fund
       - run: npm test
       - run: node --check src/index.js
+      - name: Boot smoke test
+        env:
+          SERVER_PORT: '8799'
+          CORTEX_API_TOKEN: ci-test-token
+          OWNER_NUMBER: '2348000000000'
+          WHATSAPP_SESSIONS: main,assistant
+        run: |
+          node src/index.js > /tmp/night-core.log 2>&1 &
+          NIGHT_PID=$!
+          trap 'kill $NIGHT_PID || true; cat /tmp/night-core.log' EXIT
+          for i in {1..30}; do
+            if curl -fsS http://127.0.0.1:8799/health >/tmp/health.json; then break; fi
+            sleep 0.5
+          done
+          cat /tmp/health.json
+          curl -fsS \
+            -H 'Authorization: Bearer ci-test-token' \
+            http://127.0.0.1:8799/api/cortex/bootstrap >/tmp/bootstrap.json
+          cat /tmp/bootstrap.json
+          kill $NIGHT_PID
+          wait $NIGHT_PID || true
+          trap - EXIT
