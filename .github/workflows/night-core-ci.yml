@@ -90,4 +90,5 @@ jobs:
           name: Night_Core_BotHosting
           path: /tmp/night-package/
           if-no-files-found: error
+          include-hidden-files: true
           retention-days: 1
