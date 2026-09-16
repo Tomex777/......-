@@ -27,25 +27,21 @@ export class ConfigRegistry {
   }
 
   metadata(key) { return CONFIG_SCHEMA[key] ?? inferUnknownEnv(key); }
-
   source(key) {
     if (this.runtimeValues.has(key)) return 'runtime';
     if (Object.prototype.hasOwnProperty.call(this.env, key)) return 'environment';
     return 'default';
   }
-
   effective(key) {
     const meta = this.metadata(key);
     if (this.runtimeValues.has(key)) return this.#parse(meta, this.runtimeValues.get(key));
     if (Object.prototype.hasOwnProperty.call(this.env, key)) return this.#parse(meta, this.env[key]);
     return meta.default;
   }
-
   get(key, fallback) {
     const value = this.effective(key);
     return value == null ? fallback : value;
   }
-
   setRuntime(key, value) {
     const meta = this.metadata(key);
     if (meta.apply !== 'hot') throw new Error(`${key} requires a deployment restart`);
@@ -53,9 +49,7 @@ export class ConfigRegistry {
     this.runtimeValues.set(key, value);
     return this.effective(key);
   }
-
   clearRuntime(key) { return this.runtimeValues.delete(key); }
-
   publicEntry(key) {
     const meta = this.metadata(key);
     const value = this.effective(key);
@@ -73,12 +67,11 @@ export class ConfigRegistry {
       ...(secret ? { count: Array.isArray(value) ? value.length : configured ? 1 : 0 } : { value })
     };
   }
-
   publicSnapshot() { return this.keys().map(key => this.publicEntry(key)); }
-
   runtime() {
     return {
-      port: this.get('PORT', 8787),
+      port: number(this.get('SERVER_PORT', this.get('PORT', 8787)), 8787),
+      host: '0.0.0.0',
       ownerNumber: String(this.get('OWNER_NUMBER', '')).replace(/\D/g, ''),
       sessions: list(this.get('WHATSAPP_SESSIONS', ['main', 'assistant'])).map(x => x.toLowerCase()),
       roleMode: this.get('WHATSAPP_ROLE_MODE', 'split'),
