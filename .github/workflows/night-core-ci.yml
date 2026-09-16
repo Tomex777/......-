@@ -1,0 +1,34 @@
+name: Night Core CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'commands/**'
+      - 'utils/**'
+      - 'test/**'
+      - 'package.json'
+      - '.github/workflows/night-core-ci.yml'
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'commands/**'
+      - 'utils/**'
+      - 'test/**'
+      - 'package.json'
+      - '.github/workflows/night-core-ci.yml'
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: npm install --no-audit --no-fund
+      - run: npm test
+      - run: node --check src/index.js
