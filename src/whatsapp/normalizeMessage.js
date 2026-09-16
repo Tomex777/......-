@@ -6,9 +6,11 @@ export function unwrapMessage(message = {}) {
 }
 export function normalizeMessage(raw, { sessionId = 'main' } = {}) {
   const { wrappers, content } = unwrapMessage(raw?.message ?? {}); const type = Object.keys(content)[0] ?? 'unknown'; const payload = content[type] ?? {};
+  const key = raw?.key ?? {};
   const text = type === 'conversation' ? content.conversation : payload.text ?? payload.caption ?? payload.name ?? null;
-  return { id: raw?.key?.id ?? null, sessionId, chatJid: raw?.key?.remoteJid ?? null, participantJid: raw?.key?.participant ?? null,
-    fromMe: Boolean(raw?.key?.fromMe), timestamp: Number(raw?.messageTimestamp ?? Date.now()), type, wrappers,
+  const senderJid = key.participantAlt ?? key.participantPn ?? key.senderPn ?? key.remoteJidAlt ?? key.participant ?? key.remoteJid ?? null;
+  return { id: key.id ?? null, sessionId, chatJid: key.remoteJid ?? null, participantJid: key.participant ?? null, senderJid,
+    fromMe: Boolean(key.fromMe), timestamp: Number(raw?.messageTimestamp ?? Date.now()), type, wrappers,
     viewOnce: wrappers.some(x => x.startsWith('viewOnce')) || Boolean(payload.viewOnce), text, mimeType: payload.mimetype ?? null,
     fileName: payload.fileName ?? null, seconds: payload.seconds ?? null,
     contextInfo: payload.contextInfo ? { stanzaId: payload.contextInfo.stanzaId ?? null, participant: payload.contextInfo.participant ?? null, mentionedJid: payload.contextInfo.mentionedJid ?? [] } : null,
