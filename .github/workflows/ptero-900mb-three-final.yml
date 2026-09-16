@@ -1,0 +1,234 @@
+name: FINAL - Three 900MiB Pterodactyl torrent tests
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/ptero-900mb-three-final.yml'
+
+jobs:
+  three-900mb-final:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Install host seeder tools without starting services
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo sh -c 'printf "#!/bin/sh\nexit 101\n" > /usr/sbin/policy-rc.d && chmod +x /usr/sbin/policy-rc.d'
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq transmission-daemon transmission-cli
+          sudo rm -f /usr/sbin/policy-rc.d
+          sudo pkill transmission-daemon 2>/dev/null || true
+
+      - name: Create and seed three independent 900 MiB torrents
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ROOT="$RUNNER_TEMP/three-900-final"
+          SEED="$ROOT/seed"
+          TORRENTS="$ROOT/torrents"
+          CFG="$ROOT/transmission"
+          mkdir -p "$SEED" "$TORRENTS" "$CFG"
+
+          fallocate -l 900M "$SEED/Sintel-720p-test.mkv"
+          fallocate -l 900M "$SEED/Big-Buck-Bunny-720p-test.mkv"
+          fallocate -l 900M "$SEED/Tears-of-Steel-720p-test.mkv"
+
+          transmission-create -o "$TORRENTS/sintel.torrent" "$SEED/Sintel-720p-test.mkv"
+          transmission-create -o "$TORRENTS/bunny.torrent" "$SEED/Big-Buck-Bunny-720p-test.mkv"
+          transmission-create -o "$TORRENTS/tears.torrent" "$SEED/Tears-of-Steel-720p-test.mkv"
+          chmod 644 "$TORRENTS"/*.torrent
+
+          transmission-daemon --foreground --config-dir "$CFG" --download-dir "$SEED" \
+            --peerport 51413 --port 9091 --no-auth --allowed '127.0.0.1,172.*.*.*' \
+            > "$ROOT/transmission.log" 2>&1 &
+
+          for i in $(seq 1 30); do
+            transmission-remote 127.0.0.1:9091 -l >/dev/null 2>&1 && break
+            sleep 1
+          done
+
+          transmission-remote 127.0.0.1:9091 -a "$TORRENTS/sintel.torrent" -w "$SEED"
+          transmission-remote 127.0.0.1:9091 -a "$TORRENTS/bunny.torrent" -w "$SEED"
+          transmission-remote 127.0.0.1:9091 -a "$TORRENTS/tears.torrent" -w "$SEED"
+
+          for i in $(seq 1 60); do
+            LIST="$(transmission-remote 127.0.0.1:9091 -l || true)"
+            READY_COUNT="$(printf '%s\n' "$LIST" | grep -c '100%' || true)"
+            if [ "$READY_COUNT" -ge 3 ]; then
+              echo "$LIST"
+              exit 0
+            fi
+            sleep 1
+          done
+          cat "$ROOT/transmission.log"
+          exit 1
+
+      - name: Create exact 3 GiB simulated server disk
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ROOT="$RUNNER_TEMP/three-900-final"
+          fallocate -l 3G "$ROOT/ptero.img"
+          mkfs.ext4 -q "$ROOT/ptero.img"
+          sudo mkdir -p /mnt/ptero-final
+          sudo mount -o loop "$ROOT/ptero.img" /mnt/ptero-final
+          sudo mkdir -p /mnt/ptero-final/app /mnt/ptero-final/downloads
+          sudo chown -R 1000:1000 /mnt/ptero-final
+          df -h /mnt/ptero-final
+
+      - name: Install WebTorrent inside quota with 1 GiB RAM and no swap
+        shell: bash
+        run: |
+          set -euxo pipefail
+          docker run --rm --memory=1024m --memory-swap=1024m --cpus=1 --pids-limit=256 \
+            --user 1000:1000 -v /mnt/ptero-final:/home/container -w /home/container/app \
+            node:22-bookworm sh -lc 'npm init -y >/dev/null && npm install --no-audit --no-fund webtorrent@latest'
+          du -sh /mnt/ptero-final/app
+          df -h /mnt/ptero-final
+
+      - name: Write measured sequential downloader
+        shell: bash
+        run: |
+          sudo tee /mnt/ptero-final/app/run.mjs >/dev/null <<'NODE'
+          import WebTorrent from 'webtorrent'
+          import fs from 'node:fs'
+          import dns from 'node:dns/promises'
+
+          const tests = [
+            { title: 'Sintel', torrent: '/torrents/sintel.torrent', file: 'Sintel-720p-test.mkv' },
+            { title: 'Big Buck Bunny', torrent: '/torrents/bunny.torrent', file: 'Big-Buck-Bunny-720p-test.mkv' },
+            { title: 'Tears of Steel', torrent: '/torrents/tears.torrent', file: 'Tears-of-Steel-720p-test.mkv' }
+          ]
+          const expected = 900 * 1024 * 1024
+          const hostIp = (await dns.lookup('host.docker.internal')).address
+          const results = []
+
+          function cgroupMiB () {
+            for (const p of ['/sys/fs/cgroup/memory.current', '/sys/fs/cgroup/memory/memory.usage_in_bytes']) {
+              try { return Number(fs.readFileSync(p, 'utf8').trim()) / 1048576 } catch {}
+            }
+            return 0
+          }
+
+          function freeMiB () {
+            const s = fs.statfsSync('/home/container')
+            return Number(s.bavail) * Number(s.bsize) / 1048576
+          }
+
+          async function destroyClient (client) {
+            await new Promise(resolve => client.destroy(() => resolve()))
+          }
+
+          async function runOne (test) {
+            fs.rmSync('/home/container/downloads', { recursive: true, force: true })
+            fs.mkdirSync('/home/container/downloads', { recursive: true })
+
+            const freeBefore = freeMiB()
+            const client = new WebTorrent({ dht: false })
+            const torrent = client.add(fs.readFileSync(test.torrent), { path: '/home/container/downloads' })
+
+            if (!torrent.infoHash) await new Promise(resolve => torrent.once('infoHash', resolve))
+            torrent.addPeer(`${hostIp}:51413`)
+
+            const started = Date.now()
+            let peakRss = process.memoryUsage().rss / 1048576
+            let peakCgroup = cgroupMiB()
+            let minFree = freeBefore
+            let peakPeers = torrent.numPeers
+
+            console.log(`START title=${JSON.stringify(test.title)} freeBeforeMiB=${freeBefore.toFixed(1)} infoHash=${torrent.infoHash}`)
+
+            const monitor = setInterval(() => {
+              const rss = process.memoryUsage().rss / 1048576
+              const cg = cgroupMiB()
+              const free = freeMiB()
+              peakRss = Math.max(peakRss, rss)
+              peakCgroup = Math.max(peakCgroup, cg)
+              minFree = Math.min(minFree, free)
+              peakPeers = Math.max(peakPeers, torrent.numPeers)
+              console.log(`PROGRESS title=${JSON.stringify(test.title)} pct=${(torrent.progress*100).toFixed(1)} downloadedMiB=${(torrent.downloaded/1048576).toFixed(1)} peers=${torrent.numPeers} rssMiB=${rss.toFixed(1)} cgroupMiB=${cg.toFixed(1)} freeMiB=${free.toFixed(1)}`)
+            }, 1000)
+
+            const timeout = setTimeout(() => {
+              console.error(`TIMEOUT ${test.title}`)
+              client.destroy(() => process.exit(20))
+            }, 6 * 60 * 1000)
+
+            await new Promise((resolve, reject) => {
+              torrent.once('done', resolve)
+              torrent.once('error', reject)
+              client.once('error', reject)
+            })
+
+            clearInterval(monitor)
+            clearTimeout(timeout)
+            peakRss = Math.max(peakRss, process.memoryUsage().rss / 1048576)
+            peakCgroup = Math.max(peakCgroup, cgroupMiB())
+            minFree = Math.min(minFree, freeMiB())
+            peakPeers = Math.max(peakPeers, torrent.numPeers)
+
+            const elapsed = (Date.now() - started) / 1000
+            const out = `/home/container/downloads/${test.file}`
+            const bytes = fs.statSync(out).size
+            if (bytes !== expected) throw new Error(`${test.title}: expected ${expected}, got ${bytes}`)
+
+            const result = {
+              title: test.title,
+              bytes,
+              elapsedSeconds: Number(elapsed.toFixed(2)),
+              avgMiBs: Number(((bytes/1048576)/elapsed).toFixed(2)),
+              peakRssMiB: Number(peakRss.toFixed(1)),
+              peakCgroupMiB: Number(peakCgroup.toFixed(1)),
+              minFreeDiskMiB: Number(minFree.toFixed(1)),
+              peakPeers
+            }
+            console.log(`DONE ${JSON.stringify(result)}`)
+
+            await destroyClient(client)
+            fs.rmSync('/home/container/downloads', { recursive: true, force: true })
+            fs.mkdirSync('/home/container/downloads', { recursive: true })
+            result.freeAfterCleanupMiB = Number(freeMiB().toFixed(1))
+            console.log(`CLEANED title=${JSON.stringify(test.title)} freeAfterMiB=${result.freeAfterCleanupMiB}`)
+            results.push(result)
+          }
+
+          for (const test of tests) await runOne(test)
+          fs.writeFileSync('/home/container/results.json', JSON.stringify(results, null, 2))
+          console.log('ALL_THREE_PASSED')
+          console.log(JSON.stringify(results, null, 2))
+          NODE
+          sudo chown 1000:1000 /mnt/ptero-final/app/run.mjs
+
+      - name: Run three 900 MiB transfers under Pterodactyl limits
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ROOT="$RUNNER_TEMP/three-900-final"
+          docker run --rm --name ptero-final-worker \
+            --memory=1024m --memory-swap=1024m --cpus=1 --pids-limit=256 \
+            --add-host=host.docker.internal:host-gateway --user 1000:1000 \
+            -v /mnt/ptero-final:/home/container -v "$ROOT/torrents:/torrents:ro" \
+            -w /home/container/app node:22-bookworm node run.mjs
+
+      - name: Print measured results
+        if: always()
+        shell: bash
+        run: |
+          echo '=== RESULTS ==='
+          cat /mnt/ptero-final/results.json 2>/dev/null || true
+          echo '=== SERVER DISK AFTER CLEANUP ==='
+          df -h /mnt/ptero-final || true
+          du -sh /mnt/ptero-final/app /mnt/ptero-final/downloads 2>/dev/null || true
+          echo '=== SEEDER TOTALS ==='
+          transmission-remote 127.0.0.1:9091 -l || true
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: |
+          transmission-remote 127.0.0.1:9091 --exit >/dev/null 2>&1 || true
+          sudo umount /mnt/ptero-final >/dev/null 2>&1 || true
