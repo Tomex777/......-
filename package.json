@@ -6,10 +6,10 @@
   "description": "Night core and Cortex control plane",
   "engines": { "node": ">=22.5.0" },
   "scripts": {
-    "start": "node src/index.js",
-    "dev": "NIGHT_DEV=1 node --watch src/index.js",
+    "start": "node index.js",
+    "dev": "NIGHT_DEV=1 node --watch index.js",
     "test": "node --test",
-    "check": "node --check src/index.js && node --test"
+    "check": "node --check index.js && node --check src/index.js && node --test"
   },
   "dependencies": {
     "@itsliaaa/baileys": "0.3.18-final",
