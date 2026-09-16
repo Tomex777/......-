@@ -15,7 +15,7 @@ export default {
     for (const jid of items) {
       let label = jid;
       try { label = await sessions.describeChat(message.sessionId, jid); } catch {}
-      rows.push(label === jid ? jid : `${label} — ${jid}`);
+      rows.push(label || jid);
     }
 
     await reply(`Allowed chats:\n${rows.join('\n')}`);
