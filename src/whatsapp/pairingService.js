@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import { PairingAttemptLock } from './pairingLock.js';
 
 const normalizeId = value => String(value || '').trim().toLowerCase();
+const ACTIVE = new Set(['starting', 'waiting']);
 
 export class PairingService extends EventEmitter {
   constructor({ sessions, allowedSessions = [], attemptTtlMs = 5 * 60_000 } = {}) {
@@ -15,35 +16,73 @@ export class PairingService extends EventEmitter {
 
     sessions.on('qr', event => {
       const attempt = this.attempts.get(event.sessionId);
-      if (attempt?.method === 'qr') {
+      if (attempt?.method === 'qr' && ACTIVE.has(attempt.status)) {
         attempt.qr = event.qr;
+        attempt.status = 'waiting';
         attempt.updatedAt = Date.now();
         this.emit('update', this.snapshot(event.sessionId));
       }
     });
+
     sessions.on('session', event => {
-      if (event.state === 'open') this.#finish(event.id ?? event.sessionId, 'paired');
-      this.emit('update', this.snapshot(event.id ?? event.sessionId));
+      const id = event.id ?? event.sessionId;
+      if (event.state === 'open') this.#finish(id, 'paired');
+      this.emit('update', this.snapshot(id));
     });
   }
 
   #assertSession(sessionId) {
     const id = normalizeId(sessionId);
-    if (!id || (this.allowedSessions.size && !this.allowedSessions.has(id))) throw new Error(`Unknown WhatsApp session: ${id || sessionId}`);
+    if (!id || (this.allowedSessions.size && !this.allowedSessions.has(id))) {
+      throw new Error(`Unknown WhatsApp session: ${id || sessionId}`);
+    }
     return id;
   }
 
-  #start(sessionId, method) {
+  async #prepare(sessionId, { replaceExisting = false } = {}) {
     const id = this.#assertSession(sessionId);
-    if (this.sessions.isRegistered(id)) throw new Error(`Session ${id} is already paired`);
-    const token = this.lock.claim(id, method);
-    if (!token) throw new Error(`Pairing already active for ${id}`);
+    const currentAttempt = this.attempts.get(id);
+
+    if (currentAttempt && ACTIVE.has(currentAttempt.status)) {
+      await this.cancel(id);
+    }
+
+    if (this.sessions.isRegistered(id)) {
+      if (!replaceExisting) throw new Error(`Session ${id} is already paired`);
+      await this.sessions.logout(id);
+    } else if (this.sessions.sessionSnapshot(id).state !== 'idle') {
+      await this.sessions.disconnect(id);
+      this.sessions.clearAuth?.(id);
+    }
+
+    return id;
+  }
+
+  #begin(sessionId, method) {
+    const token = this.lock.claim(sessionId, method);
+    if (!token) throw new Error(`Pairing already active for ${sessionId}`);
+
     const now = Date.now();
-    const attempt = { sessionId: id, method, token, status: 'starting', startedAt: now, updatedAt: now, expiresAt: now + this.attemptTtlMs, code: null, qr: null, error: null };
-    this.attempts.set(id, attempt);
-    attempt.timer = setTimeout(() => {
-      this.#finish(id, 'expired');
-      Promise.resolve(this.sessions.disconnect(id)).finally(() => this.sessions.clearAuth?.(id)).catch(() => {});
+    const attempt = {
+      sessionId,
+      method,
+      token,
+      status: 'starting',
+      startedAt: now,
+      updatedAt: now,
+      expiresAt: now + this.attemptTtlMs,
+      code: null,
+      qr: null,
+      error: null
+    };
+
+    this.attempts.set(sessionId, attempt);
+    attempt.timer = setTimeout(async () => {
+      this.#finish(sessionId, 'expired');
+      try {
+        await this.sessions.disconnect(sessionId);
+        if (!this.sessions.isRegistered(sessionId)) this.sessions.clearAuth?.(sessionId);
+      } catch {}
     }, this.attemptTtlMs);
     attempt.timer.unref?.();
     return attempt;
@@ -62,46 +101,57 @@ export class PairingService extends EventEmitter {
     return true;
   }
 
-  async startCode(sessionId, phoneNumber) {
-    const attempt = this.#start(sessionId, 'code');
+  async #fail(attempt, error) {
+    attempt.error = error.message;
+    this.#finish(attempt.sessionId, 'failed');
     try {
-      const code = await this.sessions.requestPairingCode(attempt.sessionId, phoneNumber);
+      await this.sessions.disconnect(attempt.sessionId);
+      if (!this.sessions.isRegistered(attempt.sessionId)) this.sessions.clearAuth?.(attempt.sessionId);
+    } catch {}
+    throw error;
+  }
+
+  async startCode(sessionId, phoneNumber, { replaceExisting = false } = {}) {
+    const id = await this.#prepare(sessionId, { replaceExisting });
+    const attempt = this.#begin(id, 'code');
+
+    try {
+      const code = await this.sessions.requestPairingCode(id, phoneNumber);
       attempt.code = code;
       attempt.status = 'waiting';
       attempt.updatedAt = Date.now();
-      this.emit('update', this.snapshot(attempt.sessionId));
-      return this.snapshot(attempt.sessionId);
+      this.emit('update', this.snapshot(id));
+      return this.snapshot(id);
     } catch (error) {
-      attempt.error = error.message;
-      this.#finish(attempt.sessionId, 'failed');
-      throw error;
+      return this.#fail(attempt, error);
     }
   }
 
-  async startQr(sessionId) {
-    const attempt = this.#start(sessionId, 'qr');
+  async startQr(sessionId, { replaceExisting = false } = {}) {
+    const id = await this.#prepare(sessionId, { replaceExisting });
+    const attempt = this.#begin(id, 'qr');
+
     try {
-      await this.sessions.connect(attempt.sessionId, { force: true });
+      await this.sessions.connect(id, { force: true });
       attempt.status = 'waiting';
       attempt.updatedAt = Date.now();
-      const current = this.sessions.sessionSnapshot(attempt.sessionId, { includeQr: true });
+      const current = this.sessions.sessionSnapshot(id, { includeQr: true });
       if (current.qr) attempt.qr = current.qr;
-      this.emit('update', this.snapshot(attempt.sessionId));
-      return this.snapshot(attempt.sessionId);
+      this.emit('update', this.snapshot(id));
+      return this.snapshot(id);
     } catch (error) {
-      attempt.error = error.message;
-      this.#finish(attempt.sessionId, 'failed');
-      throw error;
+      return this.#fail(attempt, error);
     }
   }
 
   async cancel(sessionId) {
     const id = this.#assertSession(sessionId);
     const attempt = this.attempts.get(id);
-    if (!attempt) return false;
+    if (!attempt || !ACTIVE.has(attempt.status)) return false;
+
     this.#finish(id, 'cancelled');
     await this.sessions.disconnect(id);
-    this.sessions.clearAuth?.(id);
+    if (!this.sessions.isRegistered(id)) this.sessions.clearAuth?.(id);
     return true;
   }
 
@@ -109,18 +159,23 @@ export class PairingService extends EventEmitter {
     const id = this.#assertSession(sessionId);
     const attempt = this.attempts.get(id);
     const session = this.sessions.sessionSnapshot(id, { includeQr: true });
+    const active = Boolean(attempt && ACTIVE.has(attempt.status));
+
     return {
       sessionId: id,
       registered: session.registered,
       connection: session.state,
-      method: attempt?.method ?? null,
+      method: active ? attempt.method : null,
       status: session.registered ? 'paired' : attempt?.status ?? 'idle',
-      startedAt: attempt?.startedAt ?? null,
+      startedAt: active ? attempt.startedAt : null,
       updatedAt: attempt?.updatedAt ?? null,
-      expiresAt: attempt?.expiresAt ?? null,
-      code: attempt?.status === 'waiting' ? attempt.code : null,
-      qr: attempt?.status === 'waiting' ? (attempt.qr ?? session.qr ?? null) : null,
-      error: attempt?.error ?? session.lastError ?? null
+      expiresAt: active ? attempt.expiresAt : null,
+      code: active && attempt.method === 'code' ? attempt.code : null,
+      qr: active && attempt.method === 'qr' ? (attempt.qr ?? session.qr ?? null) : null,
+      error: attempt?.error ?? session.lastError ?? null,
+      canPair: !session.registered,
+      canRepair: session.registered,
+      canReplaceAttempt: active
     };
   }
 
