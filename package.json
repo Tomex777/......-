@@ -1,6 +1,6 @@
 {
   "name": "night-private-bot",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "Night core and Cortex control plane",
@@ -13,8 +13,15 @@
   },
   "dependencies": {
     "@itsliaaa/baileys": "0.3.18-final",
+    "chess.js": "^1.4.0",
     "dotenv": "^16.4.7",
+    "ffmpeg-static": "^5.2.0",
+    "jsqr": "^1.4.0",
+    "mammoth": "^1.9.1",
+    "pdf-parse": "^1.1.1",
     "pdfkit": "^0.17.2",
-    "pino": "^9.9.0"
+    "pino": "^9.9.0",
+    "qrcode": "^1.5.4",
+    "sharp": "^0.34.3"
   }
 }
