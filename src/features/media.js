@@ -5,16 +5,27 @@ import { spawn } from 'node:child_process';
 import sharp from 'sharp';
 import ffmpegPath from 'ffmpeg-static';
 
+function unwrap(message = {}) {
+  let current = message;
+  for (let i = 0; i < 5; i += 1) {
+    const next = current?.viewOnceMessageV2?.message || current?.viewOnceMessageV2Extension?.message || current?.viewOnceMessage?.message || current?.ephemeralMessage?.message || current?.documentWithCaptionMessage?.message;
+    if (!next) break;
+    current = next;
+  }
+  return current || {};
+}
+
 function firstMedia(message = {}) {
+  const m = unwrap(message);
   const types = [
-    ['image', message.imageMessage], ['video', message.videoMessage], ['audio', message.audioMessage],
-    ['sticker', message.stickerMessage], ['document', message.documentMessage]
+    ['image', m.imageMessage], ['video', m.videoMessage], ['audio', m.audioMessage],
+    ['sticker', m.stickerMessage], ['document', m.documentMessage]
   ];
   return types.find(([,node]) => node) || [null,null];
 }
 
 export function quotedEnvelope(raw) {
-  const m = raw?.message ?? {};
+  const m = unwrap(raw?.message ?? {});
   const carrier = m.extendedTextMessage ?? m.imageMessage ?? m.videoMessage ?? m.documentMessage ?? m.audioMessage ?? m.stickerMessage ?? {};
   const q = carrier?.contextInfo?.quotedMessage ?? null;
   if (!q) return null;
@@ -22,7 +33,7 @@ export function quotedEnvelope(raw) {
 }
 
 export function quotedText(raw) {
-  const q = quotedEnvelope(raw)?.message;
+  const q = unwrap(quotedEnvelope(raw)?.message);
   if (!q) return '';
   return String(q.conversation ?? q.extendedTextMessage?.text ?? q.imageMessage?.caption ?? q.videoMessage?.caption ?? q.documentMessage?.caption ?? '').trim();
 }
