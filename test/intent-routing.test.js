@@ -29,6 +29,22 @@ test('comparison renders an image by default',async()=>{
   assert.equal(Buffer.isBuffer(result.payload.image),true);
 });
 
+test('comparison uses web research as grounding when search is available',async()=>{
+  let searched=false;
+  let askPrompt='';
+  const ai={
+    search:async({text})=>{searched=true;assert.match(text,/Research the facts needed/);return{text:'Phone A has 8 GB RAM. Phone B has 12 GB RAM.'};},
+    ask:async({text})=>{askPrompt=text;return{text:JSON.stringify({title:'Phones',columns:['Item','RAM'],rows:[{Item:'A',RAM:'8 GB'},{Item:'B',RAM:'12 GB'}]})};}
+  };
+  const features={table:async()=>Buffer.from('image')};
+  const intents=new IntentEngine({ai,features,logger:{warn(){}}});
+  const result=await intents.handle({text:'compare phone A and phone B',message,raw:null,senderJid:'owner'});
+  assert.equal(searched,true);
+  assert.match(askPrompt,/Web research to ground the comparison/);
+  assert.match(askPrompt,/Phone A has 8 GB RAM/);
+  assert.equal(result.intent,'table.image');
+});
+
 test('comparison renders PDF only when requested',async()=>{
   const ai={ask:async()=>({text:JSON.stringify({title:'Phones',columns:['Item','RAM'],rows:[{Item:'A',RAM:'8 GB'}]})})};
   const features={
