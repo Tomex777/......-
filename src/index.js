@@ -10,6 +10,7 @@ import { ActivityStore } from './history/activityStore.js';
 import { NightAIService } from './ai/service.js';
 import { IntentEngine } from './ai/intentEngine.js';
 import { CapabilityHub } from './features/hub.js';
+import { FeatureScheduler } from './features/scheduler.js';
 import { NightSessionManager } from './whatsapp/sessionManager.js';
 import { PairingService } from './whatsapp/pairingService.js';
 import { runStartupPairing } from './whatsapp/startupPairing.js';
@@ -23,8 +24,7 @@ const runtime = config.runtime();
 const access = new AccessController({ ownerNumber: runtime.ownerNumber });
 const roleManager = new SessionRoleManager({ sessions: runtime.sessions, mode: runtime.roleMode, inboxSession: runtime.inboxSession, aiSession: runtime.aiSession, fallbackEnabled: runtime.fallbackEnabled });
 const registry = new HotModuleRegistry({ commandDir: path.resolve('commands'), utilDir: path.resolve('utils') });
-await registry.loadAll();
-registry.startWatching();
+await registry.loadAll(); registry.startWatching();
 const inbox = new InboxStore();
 const activity = new ActivityStore();
 const events = new CortexEventHub();
@@ -32,6 +32,7 @@ const sessions = new NightSessionManager({ roleManager });
 const pairing = new PairingService({ sessions, allowedSessions: runtime.sessions });
 const ai = new NightAIService({ config, activity, logger });
 const features = new CapabilityHub({ config, sessions, inbox, ai, logger });
+const scheduler = new FeatureScheduler({ store: features.store, sessions, ai, logger });
 const intents = new IntentEngine({ ai, features, sessions, logger });
 const dispatcher = new MessageDispatcher({ registry, access, sessions, config, roleManager, ai, activity, features, logger });
 
@@ -51,15 +52,11 @@ async function maybeHandleNaturalAI(message, raw, dispatched) {
   if (!message?.chatJid || !message?.text || !access.isAllowed(message.chatJid) || !config.get('AI_ENABLED', true)) return false;
   const sender = await dispatcher.resolveSender(message);
   if (sender.ignored || !access.isOwner(sender.senderJid)) return false;
-
   const isGroup = message.chatJid.endsWith('@g.us');
   const preferredAI = String(config.get('WHATSAPP_AI_SESSION', runtime.aiSession || 'assistant')).toLowerCase();
   let prompt = String(message.text || '').trim();
-  if (isGroup) {
-    const match = prompt.match(/^@?night(?:\s*[:,\-])?\s+([\s\S]+)$/i);
-    if (!match) return false;
-    prompt = match[1].trim();
-  } else if (String(message.sessionId).toLowerCase() !== preferredAI) return false;
+  if (isGroup) { const match = prompt.match(/^@?night(?:\s*[:,\-])?\s+([\s\S]+)$/i); if (!match) return false; prompt = match[1].trim(); }
+  else if (String(message.sessionId).toLowerCase() !== preferredAI) return false;
   if (!prompt || prompt.startsWith('.')) return false;
 
   try {
@@ -67,18 +64,14 @@ async function maybeHandleNaturalAI(message, raw, dispatched) {
     if (action?.payload) {
       await sessions.sendViaSession(message.sessionId, message.chatJid, action.payload, raw?.key ? { quoted: raw } : {});
       activity.logAI({ at: Date.now(), sessionId: message.sessionId, chatJid: message.chatJid, senderJid: sender.senderJid, name: action.intent || 'intent', input: prompt, output: '[capability executed]', success: true, provider: 'deterministic' });
-      events.publish('ai.intent', { sessionId: message.sessionId, chatJid: message.chatJid, intent: action.intent });
-      return true;
+      events.publish('ai.intent', { sessionId: message.sessionId, chatJid: message.chatJid, intent: action.intent }); return true;
     }
-
     const answer = await ai.ask({ text: prompt, sessionId: message.sessionId, chatJid: message.chatJid, senderJid: sender.senderJid, complexity: 0.45 });
     await sessions.sendViaSession(message.sessionId, message.chatJid, { text: answer.text }, raw?.key ? { quoted: raw } : {});
-    events.publish('ai.response', { sessionId: message.sessionId, chatJid: message.chatJid, provider: answer.provider, model: answer.model });
-    return true;
+    events.publish('ai.response', { sessionId: message.sessionId, chatJid: message.chatJid, provider: answer.provider, model: answer.model }); return true;
   } catch (error) {
     logger.warn({ err: error.message, sessionId: message.sessionId, chatJid: message.chatJid }, 'natural AI reply failed');
-    try { await sessions.sendViaSession(message.sessionId, message.chatJid, { text: `AI failed: ${error.message}` }, raw?.key ? { quoted: raw } : {}); } catch {}
-    return true;
+    try { await sessions.sendViaSession(message.sessionId, message.chatJid, { text: `AI failed: ${error.message}` }, raw?.key ? { quoted: raw } : {}); } catch {} return true;
   }
 }
 
@@ -86,10 +79,7 @@ sessions.on('message', async (message, raw) => {
   events.publish('message.received', { sessionId: message.sessionId, chatJid: message.chatJid, id: message.id, type: message.type, fromMe: message.fromMe });
   const dispatched = await dispatcher.handle(message, raw);
   if (dispatched.handled) events.publish('command.dispatch', { sessionId: message.sessionId, chatJid: message.chatJid, ...dispatched, error: dispatched.error?.message });
-  if (message.chatJid && (access.isAllowed(message.chatJid) || features.isObserved(message.chatJid))) {
-    inbox.upsertMessage(message);
-    events.publish('inbox.message', message);
-  }
+  if (message.chatJid && (access.isAllowed(message.chatJid) || features.isObserved(message.chatJid))) { inbox.upsertMessage(message); events.publish('inbox.message', message); }
   await maybeHandleNaturalAI(message, raw, dispatched);
 });
 
@@ -99,19 +89,9 @@ for (const sessionId of runtime.sessions) {
 }
 
 const server = createCortexServer({ config, registry, roleManager, sessions, pairing, inbox, access, events });
-server.listen(runtime.port, runtime.host, async () => {
-  logger.info({ host: runtime.host, port: runtime.port, ai: ai.status() }, 'Night Core listening');
-  try { await runStartupPairing({ config, sessions, pairing, logger }); }
-  catch (error) { logger.error({ err: error.message }, 'Startup pairing failed'); }
-});
+server.listen(runtime.port, runtime.host, async () => { logger.info({ host: runtime.host, port: runtime.port, ai: ai.status() }, 'Night Core listening'); try { await runStartupPairing({ config, sessions, pairing, logger }); } catch (error) { logger.error({ err: error.message }, 'Startup pairing failed'); } });
 
 let shuttingDown = false;
-const shutdown = async signal => {
-  if (shuttingDown) return;
-  shuttingDown = true;
-  logger.info({ signal }, 'Night shutting down');
-  registry.stopWatching(); server.close(); await sessions.closeAll(); inbox.close(); activity.close(); features.close();
-  setTimeout(() => process.exit(1), 5000).unref(); process.exit(0);
-};
+const shutdown = async signal => { if (shuttingDown) return; shuttingDown = true; logger.info({ signal }, 'Night shutting down'); registry.stopWatching(); scheduler.close(); server.close(); await sessions.closeAll(); inbox.close(); activity.close(); features.close(); setTimeout(() => process.exit(1), 5000).unref(); process.exit(0); };
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
