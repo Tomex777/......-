@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { normalizeMessage } from '../src/whatsapp/normalizeMessage.js';
 import animeCommand from '../commands/anime.js';
 import mangaCommand from '../commands/manga.js';
+import gamesCommand from '../commands/games.js';
 
 test('normalizes regular button replies into command text', () => {
   const message = normalizeMessage({
@@ -46,4 +47,14 @@ test('.manga with no arguments sends an interactive menu', async () => {
   assert.equal(payload.buttons[0].id, '.manga trending');
   assert.equal(payload.buttons[1].id, '.manga popular');
   assert.equal(payload.buttons[2].sections[0].rows[0].id, '.manga recent');
+});
+
+test('.games sends an interactive game picker', async () => {
+  let payload;
+  const result = await gamesCommand.execute({ reply:async value => { payload=value; } });
+  assert.equal(result.interactive, true);
+  assert.equal(payload.buttons[0].id, '.chess new');
+  assert.equal(payload.buttons[1].id, '.trivia new');
+  const ids=payload.buttons[2].sections[0].rows.map(row=>row.id);
+  assert.deepEqual(ids,['.tictactoe new','.hangman new','.wordchain new','.wouldyourather']);
 });
