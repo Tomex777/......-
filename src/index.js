@@ -8,6 +8,7 @@ import { HotModuleRegistry } from './hotload/registry.js';
 import { InboxStore } from './inbox/store.js';
 import { ActivityStore } from './history/activityStore.js';
 import { NightAIService } from './ai/service.js';
+import { CapabilityHub } from './features/hub.js';
 import { NightSessionManager } from './whatsapp/sessionManager.js';
 import { PairingService } from './whatsapp/pairingService.js';
 import { runStartupPairing } from './whatsapp/startupPairing.js';
@@ -35,7 +36,8 @@ const events = new CortexEventHub();
 const sessions = new NightSessionManager({ roleManager });
 const pairing = new PairingService({ sessions, allowedSessions: runtime.sessions });
 const ai = new NightAIService({ config, activity, logger });
-const dispatcher = new MessageDispatcher({ registry, access, sessions, config, roleManager, ai, activity, logger });
+const features = new CapabilityHub({ config, sessions, inbox, ai, logger });
+const dispatcher = new MessageDispatcher({ registry, access, sessions, config, roleManager, ai, activity, features, logger });
 
 registry.on('loaded', data => events.publish('module.loaded', data));
 registry.on('load-error', data => events.publish('module.load-error', { kind: data.kind, file: data.file, error: data.error?.message }));
@@ -90,7 +92,7 @@ sessions.on('message', async (message, raw) => {
   events.publish('message.received', { sessionId: message.sessionId, chatJid: message.chatJid, id: message.id, type: message.type, fromMe: message.fromMe });
   const dispatched = await dispatcher.handle(message, raw);
   if (dispatched.handled) events.publish('command.dispatch', { sessionId: message.sessionId, chatJid: message.chatJid, ...dispatched, error: dispatched.error?.message });
-  if (message.chatJid && access.isAllowed(message.chatJid)) {
+  if (message.chatJid && (access.isAllowed(message.chatJid) || features.isObserved(message.chatJid))) {
     inbox.upsertMessage(message);
     events.publish('inbox.message', message);
   }
@@ -122,6 +124,7 @@ const shutdown = async signal => {
   await sessions.closeAll();
   inbox.close();
   activity.close();
+  features.close();
   setTimeout(() => process.exit(1), 5000).unref();
   process.exit(0);
 };
