@@ -35,6 +35,12 @@ export const CONFIG_SCHEMA = Object.freeze({
   AZURE_CORE_REGION: { group: 'Azure Core', type: 'string', required: false, apply: RESTART },
   AZURE_PHI_DEPLOYMENT: { group: 'Azure Core', type: 'string', required: false, apply: RESTART },
 
+  AZURE_SPEECH_REGION: { group: 'Azure Speech', type: 'string', required: false, apply: RESTART },
+  AZURE_SPEECH_KEY: { group: 'Azure Speech', type: 'secret', required: false, apply: RESTART },
+  AZURE_TTS_VOICE: { group: 'Azure Speech', type: 'string', default: 'en-NG-AbeoNeural', apply: HOT },
+  AZURE_VISION_ENDPOINT: { group: 'Azure Vision', type: 'url', required: false, apply: RESTART },
+  AZURE_VISION_KEY: { group: 'Azure Vision', type: 'secret', required: false, apply: RESTART },
+
   AZURE_IMAGE_ENDPOINT: { group: 'Azure Image', type: 'url', required: false, apply: RESTART },
   AZURE_IMAGE_KEY: { group: 'Azure Image', type: 'secret', required: false, apply: RESTART },
   AZURE_IMAGE_REGION: { group: 'Azure Image', type: 'string', required: false, apply: RESTART },
@@ -42,6 +48,8 @@ export const CONFIG_SCHEMA = Object.freeze({
 
   AZURE_STORAGE_CONNECTION_STRING: { group: 'Blob Storage', type: 'secret', required: false, apply: RESTART },
   AZURE_STORAGE_CONTAINER: { group: 'Blob Storage', type: 'string', required: false, apply: RESTART },
+
+  TENOR_API_KEY: { group: 'Media', type: 'secret', required: false, apply: RESTART },
 
   SUWAYOMI_BASE_URL: { group: 'Suwayomi', type: 'url', required: false, apply: RESTART },
   SUWAYOMI_USERNAME: { group: 'Suwayomi', type: 'string', required: false, apply: RESTART },
