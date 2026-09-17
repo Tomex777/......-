@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-const BOOTSTRAP_COMMANDS = new Set(['allow', 'disallow', 'allowed', 'groups']);
+const BOOTSTRAP_COMMANDS = new Set(['allow', 'disallow', 'allowed', 'groups', 'observe', 'unobserve', 'observed']);
 
 export class AccessController {
   constructor({ ownerNumber = '', allowedChats = [], storagePath = path.resolve('data/access.json') } = {}) {
