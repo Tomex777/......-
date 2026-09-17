@@ -23,7 +23,11 @@ export const CONFIG_SCHEMA = Object.freeze({
   AI_DEFAULT_ROUTE: { group: 'AI', type: 'select', options: ['auto', 'groq', 'phi', 'deepseek'], default: 'auto', apply: HOT },
   DEEPSEEK_API_KEY: { group: 'DeepSeek', type: 'secret', required: false, apply: RESTART },
   DEEPSEEK_MONTHLY_CAP_USD: { group: 'DeepSeek', type: 'number', default: 2, apply: HOT },
+  GROQ_API_KEY: { group: 'Groq', type: 'secret', required: false, apply: RESTART },
   GROQ_API_KEYS: { group: 'Groq', type: 'secret-list', required: false, apply: RESTART },
+  GROQ_MODEL: { group: 'Groq', type: 'string', default: 'openai/gpt-oss-120b', apply: HOT },
+  GROQ_SEARCH_MODEL: { group: 'Groq', type: 'string', default: 'groq/compound-mini', apply: HOT },
+  GROQ_MAX_TOKENS: { group: 'Groq', type: 'number', default: 1800, apply: HOT },
 
   AZURE_CORE_ENDPOINT: { group: 'Azure Core', type: 'url', required: false, apply: RESTART },
   AZURE_CORE_KEY: { group: 'Azure Core', type: 'secret', required: false, apply: RESTART },
