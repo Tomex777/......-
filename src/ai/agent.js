@@ -26,7 +26,7 @@ export class NightAgent {
   constructor({ai,features,logger=console}={}){this.ai=ai;this.features=features;this.logger=logger;}
 
   async run({request,sessionId,chatJid,senderJid,raw=null}={}){
-    const catalog=`Allowed actions: search(query), summarize(text), translate(text), transcribe(), vision(), sticker(), sticker_to_image(), tts(text), note(text), todo(text), reminder(text), anime(mode,query), manga(mode,query), meme(dark), pinterest(query), gif(query), qr(text), image(prompt), table(title,columns,rows,format), save(text), find_saved(query), recent_saved(), status(text), chess(move), trivia(answer), hangman(letter), wordchain(word), would_you_rather(), answer(text). Use $last in a later string argument to reference the previous action output. Media actions operate on the replied WhatsApp media. table format is image by default and pdf only when explicitly requested. Maximum 6 actions. Never invent an action outside this list.`;
+    const catalog=`Allowed actions: search(query), summarize(text), translate(text), transcribe(), vision(), sticker(), sticker_to_image(), compress_image(), resize_image(width), to_video(), tts(text), note(text), todo(text), reminder(text), poll(question,options), anime(mode,query), manga(mode,query), meme(dark), pinterest(query), gif(query), qr(text), image(prompt), table(title,columns,rows,format), save(text), find_saved(query), recent_saved(), status(text), chess(move), trivia(answer), hangman(letter), wordchain(word), would_you_rather(), answer(text). Use $last in a later string argument to reference the previous action output. Media actions operate on the replied WhatsApp media. table format is image by default and pdf only when explicitly requested. poll options must contain at least two items. Maximum 6 actions. Never invent an action outside this list.`;
     const planResult=await this.ai.ask({
       text:`Plan this request as JSON only: ${request}\n\n${catalog}\nShape: {"actions":[{"type":"search","query":"..."}]}`,
       sessionId,
@@ -54,6 +54,12 @@ export class NightAgent {
       }
       else if(type==='sticker') out={kind:'sticker',buffer:await this.features.sticker(raw)};
       else if(type==='sticker_to_image') out={kind:'image',buffer:await this.features.toImage(raw),caption:''};
+      else if(type==='compress_image') out={kind:'image',buffer:await this.features.compress(raw),caption:'Compressed'};
+      else if(type==='resize_image'){
+        const width=Math.max(64,Math.min(Number(action.width)||1024,4096));
+        out={kind:'image',buffer:await this.features.resize(raw,width),caption:`Resized to ${width}px wide`};
+      }
+      else if(type==='to_video') out={kind:'video',buffer:await this.features.toVideo(raw),mimetype:'video/mp4',caption:''};
       else if(type==='tts') out={kind:'audio',buffer:await this.features.tts(replaceLast(action.text,last)),mimetype:'audio/mpeg',ptt:false};
       else if(type==='note'){
         const id=this.features.noteAdd(replaceLast(action.text,last));
@@ -66,6 +72,13 @@ export class NightAgent {
       else if(type==='reminder'){
         const r=await this.features.reminder({text:replaceLast(action.text,last),sessionId,chatJid});
         out=`Reminder #${r.id} set for ${new Date(r.dueAt).toLocaleString('en-NG')}.`;
+      }
+      else if(type==='poll'){
+        const question=replaceLast(action.question||'',last);
+        const options=Array.isArray(action.options)?action.options.map(x=>replaceLast(String(x),last)).filter(Boolean):[];
+        if(!question||options.length<2)throw new Error('A poll needs a question and at least two options.');
+        await this.features.poll({sessionId,chatJid,question,options,selectableCount:Number(action.selectableCount)||1});
+        out='Poll created.';
       }
       else if(type==='anime'){
         const rows=await this.features.anime(action.mode||'trending',replaceLast(action.query||'',last));
