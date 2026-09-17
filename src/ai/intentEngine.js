@@ -5,9 +5,20 @@ function wantsPdf(text){return /\b(pdf|document)\b/i.test(text);}
 function comparison(text){return /\b(compare|comparison|versus|\bvs\.?\b|difference between)\b/i.test(text);}
 function cleanAfter(text,re){return String(text).replace(re,'').trim();}
 function extractJson(text){const raw=String(text||'').trim();const fenced=raw.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1]||raw;const start=fenced.indexOf('{'),end=fenced.lastIndexOf('}');if(start<0||end<start)return null;try{return JSON.parse(fenced.slice(start,end+1));}catch{return null;}}
+function firstUrl(text){const match=String(text||'').match(/https?:\/\/[^\s<>"']+/i);return match?.[0]?.replace(/[),.;!?]+$/,'')||null;}
+function documentRequest(text){const s=String(text||'');const hasDoc=/\b(?:pdf|document|docx)\b/i.test(s)||(/\bfile\b/i.test(s)&&/\b(?:this|that|attached|replied)\b/i.test(s));const action=/\b(?:summarize|summarise|read|analy[sz]e|explain|review|extract|check|tell me|what(?:'s| is| does)|question|answer)\b/i.test(s);return hasDoc&&action;}
 
 function capabilityLike(text){
-  return /\b(?:pinterest|gif|sticker|voice note|text[- ]?to[- ]?speech|tts|transcrib|ocr|status|remind|reminder|qr(?: code)?|meme|anime|manga|poll|compress|resize|mp4|save (?:this|that)|saved (?:item|message|file)|recent saves?|note\b|todo\b|task\b|chess|trivia|hangman|word ?chain|would you rather|read (?:this|that) aloud|say (?:this|that) as (?:audio|a voice note))\b/i.test(text);
+  return /\b(?:pinterest|gif|sticker|voice note|text[- ]?to[- ]?speech|tts|transcrib|ocr|status|remind|reminder|qr(?: code)?|scan qr|view[- ]?once|pdf|document|docx|download|meme|anime|manga|poll|compress|resize|mp4|save (?:this|that)|saved (?:item|message|file)|recent saves?|note\b|todo\b|task\b|chess|trivia|hangman|word ?chain|would you rather|read (?:this|that) aloud|say (?:this|that) as (?:audio|a voice note))\b/i.test(text);
+}
+
+function payloadFromFile(file={}){
+  const mimetype=String(file.mimetype||'application/octet-stream');
+  if(file.kind==='sticker')return{sticker:file.buffer};
+  if(file.kind==='image'||mimetype.startsWith('image/'))return{image:file.buffer,caption:file.fileName||''};
+  if(file.kind==='video'||mimetype.startsWith('video/'))return{video:file.buffer,mimetype:mimetype||'video/mp4',caption:file.fileName||''};
+  if(file.kind==='audio'||mimetype.startsWith('audio/'))return{audio:file.buffer,mimetype,ptt:false};
+  return{document:file.buffer,mimetype,fileName:file.fileName||'Night-file'};
 }
 
 function payloadFromAgentOutput(output){
@@ -35,6 +46,20 @@ export class IntentEngine {
       const payload=payloadFromAgentOutput(r.output);
       if(payload)return{payload,intent:'workflow'};
     }
+    if(/\b(?:scan|read|decode)\b.{0,24}\bqr(?: code)?\b/i.test(input)){
+      const value=await this.features.scanQr(raw);
+      return{payload:{text:value},intent:'qr.scan'};
+    }
+    if(/\b(?:open|show|reveal|recover)\b.{0,24}\bview[- ]?once\b/i.test(input)||/\bview[- ]?once\b.{0,24}\b(?:open|show|reveal|recover)\b/i.test(input)){
+      const media=await this.features.openViewOnce(raw);
+      return{payload:payloadFromFile(media),intent:'viewonce.open'};
+    }
+    if(documentRequest(input)){
+      const doc=await this.features.readDocument(raw);
+      if(!doc?.text)throw new Error('No readable text was found in that document.');
+      const r=await this.ai.ask({...ctx,text:`Follow this request: ${input}\n\nDocument (${doc.fileName||doc.kind||'file'}):\n${String(doc.text).slice(0,45000)}`,remember:false,complexity:.55});
+      return{payload:{text:r.text},intent:'document.read'};
+    }
     if(/\b(make|turn|convert).{0,18}(this|that).{0,12}sticker\b/i.test(input)||/^sticker\b/i.test(input)){const sticker=await this.features.sticker(raw);return{payload:{sticker},intent:'sticker'};}
     if(/\b(transcribe|what (?:does|did) (?:this|that) (?:voice|audio|video)|voice note says)\b/i.test(input)){const r=await this.features.transcribe(raw);return{payload:{text:r.text},intent:'transcribe'};}
     if(/\b(ocr|extract (?:the )?text|read (?:the )?(?:text|image|screenshot))\b/i.test(input)){const r=await this.features.vision(raw);return{payload:{text:r.text||r.caption||'No text found.'},intent:'ocr'};}
@@ -45,6 +70,11 @@ export class IntentEngine {
     if(/\bremind me\b/i.test(input)){const request=cleanAfter(input,/^.*?remind me\s*/i);const r=await this.features.reminder({text:request,sessionId:message.sessionId,chatJid:message.chatJid});return{payload:{text:`Reminder set for ${new Date(r.dueAt).toLocaleString('en-NG')}: ${r.text}`},intent:'reminder'};}
     if(/\b(?:make|create|generate) (?:a )?qr(?: code)?\b/i.test(input)){const value=cleanAfter(input,/^.*?(?:qr(?: code)?)\s*(?:for|of|with)?\s*/i);if(value){const image=await this.features.qr(value);return{payload:{image,caption:value},intent:'qr'};}}
     if(/\b(?:generate|create|make|draw) (?:an? )?(?:image|picture|illustration)\b/i.test(input)){const prompt=cleanAfter(input,/^.*?(?:image|picture|illustration)\s*(?:of|for|showing)?\s*/i)||input;const image=await this.features.image(prompt);return{payload:{image,caption:prompt},intent:'image.generate'};}
+    const downloadUrl=firstUrl(`${input}\n${quotedText(raw)}`);
+    if(downloadUrl&&/\bdownload\b/i.test(input)){
+      const file=await this.features.download(downloadUrl);
+      return{payload:payloadFromFile(file),intent:'download'};
+    }
     if(/\bdark meme\b/i.test(input)){const rows=await this.features.memes(true);if(rows.length){const x=rows[Math.floor(Math.random()*rows.length)];return{payload:{image:{url:x.url},caption:x.title},intent:'darkmeme'};}}
     if(/\b(?:send|show|give me|find) (?:a )?meme\b/i.test(input)){const rows=await this.features.memes(false);if(rows.length){const x=rows[Math.floor(Math.random()*rows.length)];return{payload:{image:{url:x.url},caption:x.title},intent:'meme'};}}
     if(/\b(?:trending|popular|airing|recent) anime\b/i.test(input)){const mode=(input.match(/\b(trending|popular|airing|recent)\b/i)?.[1]||'trending').toLowerCase();const rows=await this.features.anime(mode,'');return{payload:{text:rows.map((x,i)=>`${i+1}. ${x.title}${x.score?` — ${x.score}/10`:''}`).join('\n')||'No anime found.'},intent:'anime'};}
