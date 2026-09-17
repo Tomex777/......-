@@ -1,14 +1,57 @@
-const WRAPPERS = new Map([['ephemeralMessage','ephemeral'],['viewOnceMessage','viewOnce'],['viewOnceMessageV2','viewOnceV2'],['viewOnceMessageV2Extension','viewOnceV2Extension'],['documentWithCaptionMessage','documentWithCaption']]);
+const WRAPPERS = new Map([
+  ['ephemeralMessage','ephemeral'],
+  ['viewOnceMessage','viewOnce'],
+  ['viewOnceMessageV2','viewOnceV2'],
+  ['viewOnceMessageV2Extension','viewOnceV2Extension'],
+  ['documentWithCaptionMessage','documentWithCaption']
+]);
+
 export function unwrapMessage(message = {}) {
-  const wrappers = []; let node = message; let guard = 0;
-  while (node && guard++ < 8) { const key = Object.keys(node).find(k => WRAPPERS.has(k)); if (!key) break; wrappers.push(WRAPPERS.get(key)); node = node[key]?.message ?? {}; }
+  const wrappers = [];
+  let node = message;
+  let guard = 0;
+  while (node && guard++ < 8) {
+    const key = Object.keys(node).find(k => WRAPPERS.has(k));
+    if (!key) break;
+    wrappers.push(WRAPPERS.get(key));
+    node = node[key]?.message ?? {};
+  }
   return { wrappers, content: node ?? {} };
 }
+
+function interactiveReplyText(type, payload = {}) {
+  if (type === 'buttonsResponseMessage') {
+    return payload.selectedButtonId ?? payload.selectedDisplayText ?? null;
+  }
+  if (type === 'templateButtonReplyMessage') {
+    return payload.selectedId ?? payload.selectedDisplayText ?? null;
+  }
+  if (type === 'listResponseMessage') {
+    return payload.singleSelectReply?.selectedRowId ?? payload.title ?? null;
+  }
+  if (type === 'interactiveResponseMessage') {
+    const params = payload.nativeFlowResponseMessage?.paramsJson;
+    if (params) {
+      try {
+        const parsed = JSON.parse(params);
+        return parsed.id ?? parsed.rowId ?? parsed.row_id ?? parsed.selectedId ?? parsed.selected_id ?? null;
+      } catch {}
+    }
+    return payload.body?.text ?? null;
+  }
+  return null;
+}
+
 export function normalizeMessage(raw, { sessionId = 'main' } = {}) {
-  const { wrappers, content } = unwrapMessage(raw?.message ?? {}); const type = Object.keys(content)[0] ?? 'unknown'; const payload = content[type] ?? {};
+  const { wrappers, content } = unwrapMessage(raw?.message ?? {});
+  const type = Object.keys(content)[0] ?? 'unknown';
+  const payload = content[type] ?? {};
   const key = raw?.key ?? {};
-  const text = type === 'conversation' ? content.conversation : payload.text ?? payload.caption ?? payload.name ?? null;
+  const text = type === 'conversation'
+    ? content.conversation
+    : interactiveReplyText(type, payload) ?? payload.text ?? payload.caption ?? payload.name ?? null;
   const senderJid = key.participantAlt ?? key.participantPn ?? key.senderPn ?? key.remoteJidAlt ?? key.participant ?? key.remoteJid ?? null;
+
   return {
     id: key.id ?? null,
     sessionId,
@@ -26,7 +69,11 @@ export function normalizeMessage(raw, { sessionId = 'main' } = {}) {
     mimeType: payload.mimetype ?? null,
     fileName: payload.fileName ?? null,
     seconds: payload.seconds ?? null,
-    contextInfo: payload.contextInfo ? { stanzaId: payload.contextInfo.stanzaId ?? null, participant: payload.contextInfo.participant ?? null, mentionedJid: payload.contextInfo.mentionedJid ?? [] } : null,
+    contextInfo: payload.contextInfo ? {
+      stanzaId: payload.contextInfo.stanzaId ?? null,
+      participant: payload.contextInfo.participant ?? null,
+      mentionedJid: payload.contextInfo.mentionedJid ?? []
+    } : null,
     raw: content
   };
 }
