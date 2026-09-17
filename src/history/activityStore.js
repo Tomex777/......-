@@ -30,6 +30,10 @@ export class ActivityStore {
       CREATE INDEX IF NOT EXISTS idx_activity_name_at ON activity_events(name,at DESC);`);
   }
 
+  #mapRows(rows = []) {
+    return rows.map(row => ({ ...row, success: Boolean(row.success), metadata: row.metadata_json ? safeParse(row.metadata_json) : null }));
+  }
+
   append(event = {}) {
     this.db.prepare(`INSERT INTO activity_events(at,kind,session_id,chat_jid,sender_jid,name,input_text,output_text,success,duration_ms,provider,model,metadata_json)
       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
@@ -48,10 +52,16 @@ export class ActivityStore {
     const rows = kind
       ? this.db.prepare('SELECT * FROM activity_events WHERE kind=? ORDER BY at DESC,id DESC LIMIT ?').all(kind, safeLimit)
       : this.db.prepare('SELECT * FROM activity_events ORDER BY at DESC,id DESC LIMIT ?').all(safeLimit);
-    return rows.map(row => ({ ...row, success: Boolean(row.success), metadata: row.metadata_json ? safeParse(row.metadata_json) : null }));
+    return this.#mapRows(rows);
   }
 
-  all({ kind = null, limit = 10000 } = {}) { return this.recent({ kind, limit }); }
+  all({ kind = null, limit = null } = {}) {
+    if (limit != null) return this.recent({ kind, limit });
+    const rows = kind
+      ? this.db.prepare('SELECT * FROM activity_events WHERE kind=? ORDER BY at DESC,id DESC').all(kind)
+      : this.db.prepare('SELECT * FROM activity_events ORDER BY at DESC,id DESC').all();
+    return this.#mapRows(rows);
+  }
 
   usage() {
     const total = this.db.prepare('SELECT COUNT(*) AS n FROM activity_events').get()?.n ?? 0;
