@@ -1,0 +1,7 @@
+const wins=[[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]];
+const draw=b=>`${b[0]||'1'} | ${b[1]||'2'} | ${b[2]||'3'}\n---------\n${b[3]||'4'} | ${b[4]||'5'} | ${b[5]||'6'}\n---------\n${b[6]||'7'} | ${b[7]||'8'} | ${b[8]||'9'}`;
+const winner=b=>wins.find(line=>b[line[0]]&&b[line[0]]===b[line[1]]&&b[line[1]]===b[line[2]])?.map(i=>b[i])[0]||null;
+export default {
+  name:'tictactoe',aliases:[],ownerOnly:true,requiresAllowedChat:true,requiresAI:false,feature:'games',
+  async execute({argsText,message,reply,features}){let state=features.store.loadGame(message.chatJid,'tictactoe');const input=String(argsText||'').trim().toLowerCase();if(!state||input==='new'){state={board:Array(9).fill(null),turn:'X'};features.store.saveGame(message.chatJid,'tictactoe',state);await reply(`Tic-tac-toe — X starts.\n\n${draw(state.board)}\n\nUse .tictactoe <1-9>.`);return state;}const pos=Number(input)-1;if(pos<0||pos>8||state.board[pos])throw new Error('Choose an empty square from 1 to 9.');state.board[pos]=state.turn;const win=winner(state.board);const full=state.board.every(Boolean);if(win||full){features.store.clearGame(message.chatJid,'tictactoe');await reply(`${draw(state.board)}\n\n${win?`${win} wins.`:'Draw.'}`);return{...state,winner:win,draw:!win};}state.turn=state.turn==='X'?'O':'X';features.store.saveGame(message.chatJid,'tictactoe',state);await reply(`${draw(state.board)}\n\n${state.turn}'s turn.`);return state;}
+};
