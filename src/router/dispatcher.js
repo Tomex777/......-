@@ -1,7 +1,7 @@
 const commandPattern = /^\.([a-z0-9_-]+)(?:\s+([\s\S]*))?$/i;
 
 export class MessageDispatcher {
-  constructor({ registry, access, sessions, config, roleManager, ai = null, activity = null, logger = console } = {}) {
+  constructor({ registry, access, sessions, config, roleManager, ai = null, activity = null, features = null, logger = console } = {}) {
     this.registry = registry;
     this.access = access;
     this.sessions = sessions;
@@ -9,6 +9,7 @@ export class MessageDispatcher {
     this.roleManager = roleManager;
     this.ai = ai;
     this.activity = activity;
+    this.features = features;
     this.logger = logger;
   }
 
@@ -80,7 +81,8 @@ export class MessageDispatcher {
         roleManager: this.roleManager,
         registry: this.registry,
         ai: this.ai,
-        activity: this.activity
+        activity: this.activity,
+        features: this.features
       });
       this.activity?.logCommand?.({
         at: Date.now(), sessionId: message.sessionId, chatJid: message.chatJid, senderJid,
