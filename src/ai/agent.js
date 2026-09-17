@@ -22,11 +22,20 @@ function chessText(r){
   ].filter(Boolean).join('\n\n');
 }
 
+function fileOutput(file={}){
+  const mimetype=String(file.mimetype||'application/octet-stream');
+  if(file.kind==='sticker')return{kind:'sticker',buffer:file.buffer};
+  if(file.kind==='image'||mimetype.startsWith('image/'))return{kind:'image',buffer:file.buffer,caption:file.fileName||''};
+  if(file.kind==='video'||mimetype.startsWith('video/'))return{kind:'video',buffer:file.buffer,mimetype:mimetype||'video/mp4',caption:file.fileName||''};
+  if(file.kind==='audio'||mimetype.startsWith('audio/'))return{kind:'audio',buffer:file.buffer,mimetype,ptt:false};
+  return{kind:'document',buffer:file.buffer,mimetype,fileName:file.fileName||'Night-file'};
+}
+
 export class NightAgent {
   constructor({ai,features,logger=console}={}){this.ai=ai;this.features=features;this.logger=logger;}
 
   async run({request,sessionId,chatJid,senderJid,raw=null}={}){
-    const catalog=`Allowed actions: search(query), summarize(text), translate(text), transcribe(), vision(), sticker(), sticker_to_image(), compress_image(), resize_image(width), to_video(), tts(text), note(text), todo(text), reminder(text), poll(question,options), anime(mode,query), manga(mode,query), meme(dark), pinterest(query), gif(query), qr(text), image(prompt), table(title,columns,rows,format), save(text), find_saved(query), recent_saved(), status(text), chess(move), trivia(answer), hangman(letter), wordchain(word), would_you_rather(), answer(text). Use $last in a later string argument to reference the previous action output. Media actions operate on the replied WhatsApp media. table format is image by default and pdf only when explicitly requested. poll options must contain at least two items. Maximum 6 actions. Never invent an action outside this list.`;
+    const catalog=`Allowed actions: search(query), summarize(text), translate(text), transcribe(), vision(), sticker(), sticker_to_image(), compress_image(), resize_image(width), to_video(), tts(text), read_document(instruction), scan_qr(), view_once(), download(url), note(text), todo(text), reminder(text), poll(question,options), anime(mode,query), manga(mode,query), meme(dark), pinterest(query), gif(query), qr(text), image(prompt), table(title,columns,rows,format), save(text), find_saved(query), recent_saved(), status(text), chess(move), trivia(answer), hangman(letter), wordchain(word), would_you_rather(), answer(text). Use $last in a later string argument to reference the previous action output. Replied-media actions operate on the replied WhatsApp message. read_document supports replied PDF, DOCX and text documents. scan_qr reads a QR from a replied image. view_once opens replied view-once media. download accepts only a public http/https URL. table format is image by default and pdf only when explicitly requested. poll options must contain at least two items. Maximum 6 actions. Never invent an action outside this list.`;
     const planResult=await this.ai.ask({
       text:`Plan this request as JSON only: ${request}\n\n${catalog}\nShape: {"actions":[{"type":"search","query":"..."}]}`,
       sessionId,
@@ -61,6 +70,23 @@ export class NightAgent {
       }
       else if(type==='to_video') out={kind:'video',buffer:await this.features.toVideo(raw),mimetype:'video/mp4',caption:''};
       else if(type==='tts') out={kind:'audio',buffer:await this.features.tts(replaceLast(action.text,last)),mimetype:'audio/mpeg',ptt:false};
+      else if(type==='read_document'){
+        const doc=await this.features.readDocument(raw);
+        if(!doc?.text)throw new Error('No readable text was found in that document.');
+        const instruction=replaceLast(action.instruction||'Summarize this document and preserve important facts, dates, decisions and action items.',last);
+        const r=await this.ai.ask({
+          text:`${instruction}\n\nDocument (${doc.fileName||doc.kind||'file'}):\n${String(doc.text).slice(0,45000)}`,
+          sessionId,chatJid,senderJid,remember:false,complexity:.55
+        });
+        out=r.text;
+      }
+      else if(type==='scan_qr') out=await this.features.scanQr(raw);
+      else if(type==='view_once') out=fileOutput(await this.features.openViewOnce(raw));
+      else if(type==='download'){
+        const url=replaceLast(action.url||'',last);
+        if(!/^https?:\/\//i.test(url))throw new Error('A public http/https URL is required to download a file.');
+        out=fileOutput(await this.features.download(url));
+      }
       else if(type==='note'){
         const id=this.features.noteAdd(replaceLast(action.text,last));
         out=`Note #${id} saved.`;
