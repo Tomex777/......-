@@ -17,6 +17,28 @@ test('natural note request is safely planned into the note capability',async()=>
   assert.match(result.intent,/agent\.note/);
 });
 
+test('natural poll request is planned into a real WhatsApp poll',async()=>{
+  let pollArgs=null;
+  const ai={ask:async()=>({text:JSON.stringify({actions:[{type:'poll',question:'Lunch?',options:['Rice','Pasta']}]}),provider:'groq',model:'test'})};
+  const features={poll:async args=>{pollArgs=args;}};
+  const intents=new IntentEngine({ai,features,logger:{warn(){}}});
+  const result=await intents.handle({text:'create a poll asking whether we should eat rice or pasta for lunch',message,raw:null,senderJid:'owner'});
+  assert.equal(pollArgs.question,'Lunch?');
+  assert.deepEqual(pollArgs.options,['Rice','Pasta']);
+  assert.equal(result.payload.text,'Poll created.');
+  assert.match(result.intent,/agent\.poll/);
+});
+
+test('natural image compression request returns the edited image',async()=>{
+  const ai={ask:async()=>({text:JSON.stringify({actions:[{type:'compress_image'}]}),provider:'groq',model:'test'})};
+  const features={compress:async()=>Buffer.from('compressed')};
+  const intents=new IntentEngine({ai,features,logger:{warn(){}}});
+  const result=await intents.handle({text:'compress this image for me',message,raw:{},senderJid:'owner'});
+  assert.equal(Buffer.isBuffer(result.payload.image),true);
+  assert.equal(result.payload.caption,'Compressed');
+  assert.match(result.intent,/agent\.compress_image/);
+});
+
 test('comparison renders an image by default',async()=>{
   const ai={ask:async()=>({text:JSON.stringify({title:'Phones',columns:['Item','RAM'],rows:[{Item:'A',RAM:'8 GB'},{Item:'B',RAM:'12 GB'}]})})};
   const features={
