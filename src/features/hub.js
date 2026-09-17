@@ -1,9 +1,13 @@
 import QRCode from 'qrcode';
+import sharp from 'sharp';
+import jsQR from 'jsqr';
 import { Chess } from 'chess.js';
 import { FeatureStore } from './store.js';
 import { AzureFeatureClient } from './azure.js';
 import { animeList, mangaList, meme, gifSearch, pinterestLinks } from './content.js';
 import { downloadQuotedMedia, quotedText, toSticker, stickerToImage, resizeImage, compressImage, redactImage, transcodeToMp4 } from './media.js';
+import { extractDocument } from './documents.js';
+import { fetchPublicFile } from './download.js';
 import { renderTableImage, renderTablePdf, renderTextPdf } from './render.js';
 
 const fmtDate = t => new Date(Number(t)).toLocaleString('en-NG',{dateStyle:'medium',timeStyle:'short'});
@@ -35,7 +39,7 @@ export class CapabilityHub {
 
   async #fireReminders(){
     for(const row of this.store.dueReminders(Date.now(),100)){
-      try{await this.sessions.sendViaSession(row.session_id,row.chat_jid,{text:`Reminder: ${row.text}`});this.store.markReminderFired(row);}catch(e){this.logger.warn?.({reminderId:row.id,err:e.message},'reminder delivery failed');}
+      try{await this.sessions.sendViaSession(row.session_id,row.chat_jid,{text:`Reminder: ${row.text}`});this.store.markReminderFired(row);}catch(e){this.logger.warn?.({reminderId:row.id,err:e.message},'reminder tick failed');}
     }
   }
 
@@ -99,6 +103,17 @@ export class CapabilityHub {
   async vision(raw){const media=await downloadQuotedMedia(raw);if(media.kind!=='image')throw new Error('Reply to an image.');return this.azure.vision(media.buffer);}
   async image(prompt){return this.azure.generateImage(prompt);}
   async tts(text){return this.azure.speak(text,{voice:this.config.get('AZURE_TTS_VOICE','en-NG-AbeoNeural')});}
+  async readDocument(raw){return extractDocument(raw);}
+  async download(url){return fetchPublicFile(url);}
+  async openViewOnce(raw){return downloadQuotedMedia(raw);}
+  async scanQr(raw){
+    const media=await downloadQuotedMedia(raw);
+    if(media.kind!=='image')throw new Error('Reply to an image containing a QR code.');
+    const {data,info}=await sharp(media.buffer).ensureAlpha().raw().toBuffer({resolveWithObject:true});
+    const code=jsQR(new Uint8ClampedArray(data),info.width,info.height);
+    if(!code?.data)throw new Error('No QR code found in that image.');
+    return code.data;
+  }
 
   async postStatus({sessionId,text=null,raw=null}){
     const sock=this.sessions.getSocket(sessionId);if(!sock)throw new Error('WhatsApp session is not connected.');
