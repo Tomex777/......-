@@ -7,7 +7,7 @@ function cleanAfter(text,re){return String(text).replace(re,'').trim();}
 function extractJson(text){const raw=String(text||'').trim();const fenced=raw.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1]||raw;const start=fenced.indexOf('{'),end=fenced.lastIndexOf('}');if(start<0||end<start)return null;try{return JSON.parse(fenced.slice(start,end+1));}catch{return null;}}
 
 function capabilityLike(text){
-  return /\b(?:pinterest|gif|sticker|voice note|text[- ]?to[- ]?speech|tts|transcrib|ocr|status|remind|reminder|qr(?: code)?|meme|anime|manga|save (?:this|that)|saved (?:item|message|file)|recent saves?|note\b|todo\b|task\b|chess|trivia|hangman|word ?chain|would you rather|read (?:this|that) aloud|say (?:this|that) as (?:audio|a voice note))\b/i.test(text);
+  return /\b(?:pinterest|gif|sticker|voice note|text[- ]?to[- ]?speech|tts|transcrib|ocr|status|remind|reminder|qr(?: code)?|meme|anime|manga|poll|compress|resize|mp4|save (?:this|that)|saved (?:item|message|file)|recent saves?|note\b|todo\b|task\b|chess|trivia|hangman|word ?chain|would you rather|read (?:this|that) aloud|say (?:this|that) as (?:audio|a voice note))\b/i.test(text);
 }
 
 function payloadFromAgentOutput(output){
