@@ -1,0 +1,4 @@
+export default {
+  name:'errors',aliases:[],ownerOnly:true,requiresAllowedChat:true,requiresAI:false,feature:'system',
+  async execute({reply,activity,registry}){const failures=activity.failures(20);const moduleErrors=[...registry.errors.entries()].map(([k,v])=>({key:k,...v}));const lines=['Night errors'];if(!failures.length&&!moduleErrors.length)lines.push('No recorded command/AI/module failures.');if(failures.length){lines.push('','Recent failures');for(const x of failures)lines.push(`${new Date(x.at).toLocaleString('en-NG')} — ${x.kind}/${x.name||'unknown'} — ${x.output_text||'failed'}`);}if(moduleErrors.length){lines.push('','Module load errors');for(const x of moduleErrors)lines.push(`${x.key} — ${x.message}`);}await reply(lines.join('\n'));return{failures:failures.length,moduleErrors:moduleErrors.length};}
+};
