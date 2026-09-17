@@ -39,6 +39,46 @@ test('natural image compression request returns the edited image',async()=>{
   assert.match(result.intent,/agent\.compress_image/);
 });
 
+test('natural document request reads the replied document before asking AI',async()=>{
+  let prompt='';
+  const ai={ask:async({text})=>{prompt=text;return{text:'It is a short report.'};}};
+  const features={readDocument:async()=>({text:'Revenue rose by 20%.',kind:'pdf',fileName:'report.pdf'})};
+  const intents=new IntentEngine({ai,features,logger:{warn(){}}});
+  const result=await intents.handle({text:'summarize this PDF for me',message,raw:{},senderJid:'owner'});
+  assert.equal(result.intent,'document.read');
+  assert.equal(result.payload.text,'It is a short report.');
+  assert.match(prompt,/Revenue rose by 20%/);
+  assert.match(prompt,/report\.pdf/);
+});
+
+test('natural QR scan request returns decoded text',async()=>{
+  const features={scanQr:async()=> 'https://example.com/night'};
+  const intents=new IntentEngine({ai:{},features,logger:{warn(){}}});
+  const result=await intents.handle({text:'scan this QR code',message,raw:{},senderJid:'owner'});
+  assert.equal(result.intent,'qr.scan');
+  assert.equal(result.payload.text,'https://example.com/night');
+});
+
+test('natural view-once request returns the recovered media payload',async()=>{
+  const features={openViewOnce:async()=>({kind:'video',buffer:Buffer.from('video'),mimetype:'video/mp4'})};
+  const intents=new IntentEngine({ai:{},features,logger:{warn(){}}});
+  const result=await intents.handle({text:'open this view once for me',message,raw:{},senderJid:'owner'});
+  assert.equal(result.intent,'viewonce.open');
+  assert.equal(Buffer.isBuffer(result.payload.video),true);
+  assert.equal(result.payload.mimetype,'video/mp4');
+});
+
+test('natural download request fetches a public URL and returns the right WhatsApp payload',async()=>{
+  let url='';
+  const features={download:async value=>{url=value;return{buffer:Buffer.from('image'),mimetype:'image/png',fileName:'night.png'};}};
+  const intents=new IntentEngine({ai:{},features,logger:{warn(){}}});
+  const result=await intents.handle({text:'download https://example.com/night.png',message,raw:null,senderJid:'owner'});
+  assert.equal(url,'https://example.com/night.png');
+  assert.equal(result.intent,'download');
+  assert.equal(Buffer.isBuffer(result.payload.image),true);
+  assert.equal(result.payload.caption,'night.png');
+});
+
 test('comparison renders an image by default',async()=>{
   const ai={ask:async()=>({text:JSON.stringify({title:'Phones',columns:['Item','RAM'],rows:[{Item:'A',RAM:'8 GB'},{Item:'B',RAM:'12 GB'}]})})};
   const features={
