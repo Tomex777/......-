@@ -51,8 +51,26 @@ export class IntentEngine {
     if(/\b(?:trending|popular|recent) manga\b/i.test(input)){const mode=(input.match(/\b(trending|popular|recent)\b/i)?.[1]||'trending').toLowerCase();const rows=await this.features.manga(mode,'');return{payload:{text:rows.map((x,i)=>`${i+1}. ${x.title}${x.score?` — ${x.score}/10`:''}`).join('\n')||'No manga found.'},intent:'manga'};}
     if(/\b(search|look up|find online|search the (?:web|internet))\b/i.test(input)){const r=await this.ai.search({...ctx,text:input});return{payload:{text:r.text},intent:'web.search'};}
     if(comparison(input)){
-      const r=await this.ai.ask({...ctx,text:`Create a factual comparison for this request: ${input}\nReturn JSON only in this shape: {"title":"...","columns":["Item","..."] ,"rows":[{"Item":"..."}]}. Keep it concise enough for a readable table. If current facts are needed, avoid inventing unknown specifications.`,remember:false,complexity:.55});
-      const spec=extractJson(r.text);if(spec?.columns?.length&&Array.isArray(spec.rows)){if(wantsPdf(input)){const pdf=await this.features.tablePdf(spec);return{payload:{document:pdf,mimetype:'application/pdf',fileName:'Night-comparison.pdf'},intent:'table.pdf'};}const image=await this.features.table(spec);return{payload:{image,caption:spec.title||'Comparison'},intent:'table.image'};}
+      let research='';
+      if(typeof this.ai.search==='function'){
+        try{
+          const found=await this.ai.search({...ctx,text:`Research the facts needed for this comparison: ${input}. Prefer current authoritative specifications and clearly distinguish unavailable or unconfirmed facts.`,remember:false});
+          research=String(found?.text||'').trim();
+        }catch(error){
+          this.logger.warn?.({err:error.message},'comparison web research failed; using model knowledge');
+        }
+      }
+      const grounding=research?`\n\nWeb research to ground the comparison:\n${research.slice(0,18000)}`:'';
+      const r=await this.ai.ask({...ctx,text:`Create a factual comparison for this request: ${input}${grounding}\n\nReturn JSON only in this shape: {"title":"...","columns":["Item","..."] ,"rows":[{"Item":"..."}]}. Use the research above when supplied. Do not invent missing specifications. Keep the table concise and readable.`,remember:false,complexity:.55});
+      const spec=extractJson(r.text);
+      if(spec?.columns?.length&&Array.isArray(spec.rows)){
+        if(wantsPdf(input)){
+          const pdf=await this.features.tablePdf(spec);
+          return{payload:{document:pdf,mimetype:'application/pdf',fileName:'Night-comparison.pdf'},intent:'table.pdf'};
+        }
+        const image=await this.features.table(spec);
+        return{payload:{image,caption:spec.title||'Comparison'},intent:'table.image'};
+      }
     }
 
     if(capabilityLike(input)){
