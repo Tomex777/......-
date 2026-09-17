@@ -28,5 +28,7 @@ export class InboxStore {
   markLocalRead(sessionId,chatJid){this.db.prepare('UPDATE chats SET unread_count=0 WHERE session_id=? AND jid=?').run(sessionId,chatJid);}
   listChats(sessionId,limit=100){return this.db.prepare(`SELECT c.*,(SELECT m.text FROM messages m WHERE m.session_id=c.session_id AND m.chat_jid=c.jid ORDER BY m.timestamp DESC LIMIT 1) AS preview,(SELECT m.type FROM messages m WHERE m.session_id=c.session_id AND m.chat_jid=c.jid ORDER BY m.timestamp DESC LIMIT 1) AS preview_type,(SELECT m.from_me FROM messages m WHERE m.session_id=c.session_id AND m.chat_jid=c.jid ORDER BY m.timestamp DESC LIMIT 1) AS preview_from_me FROM chats c WHERE c.session_id=? ORDER BY c.last_message_at DESC LIMIT ?`).all(sessionId,Math.max(1,Math.min(Number(limit)||100,500)));}
   listMessages(sessionId,chatJid,limit=100,before=Number.MAX_SAFE_INTEGER){const rows=this.db.prepare('SELECT payload_json FROM messages WHERE session_id=? AND chat_jid=? AND timestamp<? ORDER BY timestamp DESC LIMIT ?').all(sessionId,chatJid,Number(before),Math.max(1,Math.min(Number(limit)||100,500)));return rows.map(r=>JSON.parse(r.payload_json)).reverse();}
+  latestSessionForChat(chatJid){return this.db.prepare('SELECT session_id FROM chats WHERE jid=? ORDER BY last_message_at DESC LIMIT 1').get(chatJid)?.session_id||null;}
+  listMessagesAnySession(chatJid,limit=100,before=Number.MAX_SAFE_INTEGER){const sessionId=this.latestSessionForChat(chatJid);return sessionId?this.listMessages(sessionId,chatJid,limit,before):[];}
   close(){try{this.db.close();}catch{}}
 }
