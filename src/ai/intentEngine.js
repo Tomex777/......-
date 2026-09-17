@@ -6,6 +6,23 @@ function comparison(text){return /\b(compare|comparison|versus|\bvs\.?\b|differe
 function cleanAfter(text,re){return String(text).replace(re,'').trim();}
 function extractJson(text){const raw=String(text||'').trim();const fenced=raw.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1]||raw;const start=fenced.indexOf('{'),end=fenced.lastIndexOf('}');if(start<0||end<start)return null;try{return JSON.parse(fenced.slice(start,end+1));}catch{return null;}}
 
+function capabilityLike(text){
+  return /\b(?:pinterest|gif|sticker|voice note|text[- ]?to[- ]?speech|tts|transcrib|ocr|status|remind|reminder|qr(?: code)?|meme|anime|manga|save (?:this|that)|saved (?:item|message|file)|recent saves?|note\b|todo\b|task\b|chess|trivia|hangman|word ?chain|would you rather|read (?:this|that) aloud|say (?:this|that) as (?:audio|a voice note))\b/i.test(text);
+}
+
+function payloadFromAgentOutput(output){
+  if(output==null)return null;
+  if(typeof output==='string')return{text:output};
+  if(output.kind==='image')return{image:output.buffer,caption:output.caption||''};
+  if(output.kind==='image-url')return{image:{url:output.url},caption:output.caption||''};
+  if(output.kind==='sticker')return{sticker:output.buffer};
+  if(output.kind==='audio')return{audio:output.buffer,mimetype:output.mimetype||'audio/mpeg',ptt:Boolean(output.ptt)};
+  if(output.kind==='gif')return{video:{url:output.url},gifPlayback:true,caption:output.caption||''};
+  if(output.kind==='video')return{video:output.buffer,mimetype:output.mimetype||'video/mp4',caption:output.caption||''};
+  if(output.kind==='document')return{document:output.buffer,mimetype:output.mimetype||'application/pdf',fileName:output.fileName||'Night-document.pdf'};
+  return{text:JSON.stringify(output,null,2)};
+}
+
 export class IntentEngine {
   constructor({ai,features,sessions,logger=console}={}){this.ai=ai;this.features=features;this.sessions=sessions;this.logger=logger;this.agent=new NightAgent({ai,features,logger});}
 
@@ -15,8 +32,8 @@ export class IntentEngine {
 
     if(/\b(workflow|and then|then after|after that|do all of (?:this|these)|first .+ then)\b/i.test(input)){
       const r=await this.agent.run({request:input,sessionId:message.sessionId,chatJid:message.chatJid,senderJid,raw});
-      if(r.output?.kind==='image')return{payload:{image:r.output.buffer,caption:r.output.caption||''},intent:'workflow'};
-      return{payload:{text:typeof r.output==='string'?r.output:JSON.stringify(r.output,null,2)},intent:'workflow'};
+      const payload=payloadFromAgentOutput(r.output);
+      if(payload)return{payload,intent:'workflow'};
     }
     if(/\b(make|turn|convert).{0,18}(this|that).{0,12}sticker\b/i.test(input)||/^sticker\b/i.test(input)){const sticker=await this.features.sticker(raw);return{payload:{sticker},intent:'sticker'};}
     if(/\b(transcribe|what (?:does|did) (?:this|that) (?:voice|audio|video)|voice note says)\b/i.test(input)){const r=await this.features.transcribe(raw);return{payload:{text:r.text},intent:'transcribe'};}
@@ -36,6 +53,16 @@ export class IntentEngine {
     if(comparison(input)){
       const r=await this.ai.ask({...ctx,text:`Create a factual comparison for this request: ${input}\nReturn JSON only in this shape: {"title":"...","columns":["Item","..."] ,"rows":[{"Item":"..."}]}. Keep it concise enough for a readable table. If current facts are needed, avoid inventing unknown specifications.`,remember:false,complexity:.55});
       const spec=extractJson(r.text);if(spec?.columns?.length&&Array.isArray(spec.rows)){if(wantsPdf(input)){const pdf=await this.features.tablePdf(spec);return{payload:{document:pdf,mimetype:'application/pdf',fileName:'Night-comparison.pdf'},intent:'table.pdf'};}const image=await this.features.table(spec);return{payload:{image,caption:spec.title||'Comparison'},intent:'table.image'};}
+    }
+
+    if(capabilityLike(input)){
+      try{
+        const r=await this.agent.run({request:input,sessionId:message.sessionId,chatJid:message.chatJid,senderJid,raw});
+        const payload=payloadFromAgentOutput(r.output);
+        if(payload)return{payload,intent:`agent.${r.trace?.map(x=>x.type).join('+')||'capability'}`};
+      }catch(error){
+        this.logger.warn?.({err:error.message,intentText:input.slice(0,160)},'capability intent planning failed');
+      }
     }
     return null;
   }
