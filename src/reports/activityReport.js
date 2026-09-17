@@ -22,13 +22,13 @@ function recentRows(rows = []) {
   });
 }
 
-export async function sendActivityReport({ activity, reply, kind = null, title = 'Night history', pdf = false, recentLimit = 25, pdfLimit = 5000 } = {}) {
+export async function sendActivityReport({ activity, reply, kind = null, title = 'Night history', pdf = false, recentLimit = 25 } = {}) {
   if (!activity) throw new Error('Activity store is unavailable');
   if (pdf) {
-    const rows = activity.all({ kind, limit: pdfLimit });
+    const rows = activity.all({ kind });
     const buffer = await renderTextPdf({ title, lines: activityLines(rows), metadata: { Entries: rows.length } });
     await reply({ document: buffer, mimetype: 'application/pdf', fileName: `${title.replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '') || 'night-history'}.pdf` });
-    return { count: rows.length, pdf: true };
+    return { count: rows.length, pdf: true, complete: true };
   }
 
   const rows = activity.recent({ kind, limit: recentLimit });
